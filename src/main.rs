@@ -1,48 +1,48 @@
 use bevy::{
     diagnostic::{EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin},
-    input::common_conditions::input_just_pressed,
     platform::collections::HashMap,
     prelude::*,
     window::WindowMode,
 };
-use bevy_flycam::{FlyCam, NoCameraPlayerPlugin};
+use bevy_flycam::{FlyCam, MovementSettings, NoCameraPlayerPlugin};
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 use iyes_perf_ui::{PerfUiPlugin, prelude::PerfUiAllEntries};
 use noiz::{Noise, SampleableFor, prelude::common_noise::Perlin, rng::NoiseRng};
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "FerrisCraft".to_string(),
-                mode: WindowMode::Windowed,
+        .add_plugins((
+            DefaultPlugins.set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "FerrisCraft".to_string(),
+                    mode: WindowMode::Windowed,
+                    ..default()
+                }),
                 ..default()
             }),
+            FrameTimeDiagnosticsPlugin::default(),
+            EntityCountDiagnosticsPlugin,
+            PerfUiPlugin,
+            EguiPlugin {
+                enable_multipass_for_primary_context: false,
+            },
+            WorldInspectorPlugin::default(),
+            NoCameraPlayerPlugin,
+        ))
+        .insert_resource(MovementSettings {
+            speed: 100.0,
             ..default()
-        }))
-        .add_plugins(FrameTimeDiagnosticsPlugin::default())
-        .add_plugins(EntityCountDiagnosticsPlugin)
-        .add_plugins(PerfUiPlugin)
-        .add_plugins(EguiPlugin {
-            enable_multipass_for_primary_context: false,
         })
-        .add_plugins(WorldInspectorPlugin::default())
-        .add_plugins(NoCameraPlayerPlugin)
         .insert_resource(GameInfo {
             noise: Noise {
-                frequency: 0.0069 * 2.0,
+                frequency: 0.0069,
                 noise: Perlin::default(),
                 seed: NoiseRng(0),
             },
             chunks: HashMap::new(),
         })
         .add_systems(Startup, setup)
-        .add_systems(
-            Update,
-            ((spawn_chunks, populate_chunks)
-                .chain()
-                .run_if(input_just_pressed(KeyCode::KeyH)),),
-        )
+        .add_systems(Update, (handle_chunks, populate_chunks))
         .run();
 }
 
@@ -54,6 +54,7 @@ pub struct Block {
 #[repr(u32)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BlockKind {
+    // values are colors that are applied to the material
     Air = 0x00000000,
     Grass = 0xFF00FF00,
     Dirt = 0xFFA52A2A,
@@ -78,27 +79,28 @@ pub fn is_transparent(kind: BlockKind) -> bool {
 
 #[derive(Component, Clone)]
 pub struct Chunk {
-    pub x: isize,
-    pub z: isize,
+    pub x: i32,
+    pub z: i32,
     // x y z
-    pub blocks: HashMap<(isize, isize, isize), Block>,
+    pub blocks: HashMap<(i32, i32, i32), Block>,
 }
 
 #[derive(Resource)]
 pub struct GameInfo {
     noise: Noise<Perlin>,
     // x z
-    chunks: HashMap<(isize, isize), Chunk>,
+    chunks: HashMap<(i32, i32), Chunk>,
 }
 
-pub const CHUNK_SIZE: isize = 16;
-pub const CHUNK_HEIGHT: isize = 64;
-pub const SEA_LEVEL: isize = 8;
+pub const CHUNK_SIZE: i32 = 16;
+pub const CHUNK_HEIGHT: i32 = 256;
+pub const SEA_LEVEL: i32 = 64;
+pub const RENDER_DISTANCE: i32 = 6;
 
 fn setup(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    // mut meshes: ResMut<Assets<Mesh>>,
+    // mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     commands.spawn((
         Camera3d::default(),
@@ -107,28 +109,41 @@ fn setup(
     ));
     commands.spawn(PerfUiAllEntries::default());
     commands.spawn((
-        PointLight {
+        DirectionalLight {
+            illuminance: 5_000.0,
             shadows_enabled: true,
             ..default()
         },
-        Transform::from_xyz(4.0, 8.0, 4.0),
-    ));
-
-    commands.spawn((
-        Mesh3d(meshes.add(Circle::new(4.0))),
-        MeshMaterial3d(materials.add(Color::WHITE)),
-        Transform::from_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
-    ));
-    commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(1.0, 1.0, 1.0))),
-        MeshMaterial3d(materials.add(Color::srgb_u8(124, 144, 255))),
-        Transform::from_xyz(0.0, 0.5, 0.0),
+        // light idk
+        Transform::from_rotation(Quat::from_euler(
+            EulerRot::ZYX,
+            0.0,
+            std::f32::consts::FRAC_PI_4,  // 45 degrees around Y
+            -std::f32::consts::FRAC_PI_3, // -60 degrees pitch (sun in sky)
+        )),
     ));
 }
 
-fn spawn_chunks(mut commands: Commands, mut game_info: ResMut<GameInfo>) {
-    for chunk_z in -25..25 {
-        for chunk_x in -25..25 {
+fn noise(noise: &Noise<Perlin>, pos: Vec2) -> f32 {
+    let n: f32 = noise.sample(pos);
+    (n + 1.0) / 2.0 * (CHUNK_HEIGHT - SEA_LEVEL) as f32
+}
+
+fn handle_chunks(
+    mut commands: Commands,
+    mut game_info: ResMut<GameInfo>,
+    player: Single<&Transform, With<Camera3d>>,
+) {
+    let pt = player.translation;
+    for chunk_z in
+        (pt.z as i32 / CHUNK_SIZE - RENDER_DISTANCE)..(pt.z as i32 / CHUNK_SIZE + RENDER_DISTANCE)
+    {
+        for chunk_x in (pt.x as i32 / CHUNK_SIZE - RENDER_DISTANCE)
+            ..(pt.x as i32 / CHUNK_SIZE + RENDER_DISTANCE)
+        {
+            if game_info.chunks.contains_key(&(chunk_x, chunk_z)) {
+                continue;
+            }
             let mut chunk = Chunk {
                 x: chunk_x,
                 z: chunk_z,
@@ -136,13 +151,14 @@ fn spawn_chunks(mut commands: Commands, mut game_info: ResMut<GameInfo>) {
             };
             for rela_z in 0..CHUNK_SIZE {
                 for rela_x in 0..CHUNK_SIZE {
-                    let max_y_float: f32 = game_info.noise.sample(Vec2::new(
-                        (rela_x + chunk_x * CHUNK_SIZE) as f32,
-                        (rela_z + chunk_z * CHUNK_SIZE) as f32,
-                    ));
                     // [-1.0 .. 1.0] -> [0.0 .. 2.0] -> [0 .. CHUNK_HEIGHT - SEA_LEVEL] + SEA_LEVEL
-                    let max_y = ((max_y_float + 1.0) * (CHUNK_HEIGHT - SEA_LEVEL) as f32 / 2.0)
-                        as isize
+                    let max_y = noise(
+                        &game_info.noise,
+                        Vec2::new(
+                            (rela_x + chunk_x * CHUNK_SIZE) as f32,
+                            (rela_z + chunk_z * CHUNK_SIZE) as f32,
+                        ),
+                    ) as i32
                         + SEA_LEVEL;
 
                     for y in 0..CHUNK_HEIGHT {
@@ -176,10 +192,10 @@ fn spawn_chunks(mut commands: Commands, mut game_info: ResMut<GameInfo>) {
 
 fn populate_chunks(
     mut commands: Commands,
-    chunks: Query<(Entity, &Chunk), Added<Chunk>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     game_info: Res<GameInfo>,
+    chunks: Query<(Entity, &Chunk), Added<Chunk>>,
 ) {
     let quad = meshes.add(Mesh::from(Rectangle::new(1.0, 1.0)));
     for (entity, chunk) in chunks.iter() {
@@ -195,7 +211,7 @@ fn populate_chunks(
                     let chunk_e = game_info.chunks.get(&(chunk.x + 1, chunk.z));
                     let chunk_w = game_info.chunks.get(&(chunk.x - 1, chunk.z));
 
-                    let get_block = |mut x: isize, y: isize, mut z: isize| -> Option<&Block> {
+                    let get_block = |mut x: i32, y: i32, mut z: i32| -> Option<&Block> {
                         if !(0..CHUNK_HEIGHT).contains(&y) {
                             return None;
                         }
