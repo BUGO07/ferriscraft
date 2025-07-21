@@ -1,0 +1,22 @@
+[package]
+name = "ferriscraft"
+version = "0.1.0"
+edition = "2024"
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+opt-level = 3
+
+[dependencies]
+bevy = { version = "0.16.1", features = ["dynamic_linking", "wayland"] }
+bevy-inspector-egui = "0.31.0"
+bevy_flycam = "0.16.1"
+heapless = "0.8.0"
+iyes_perf_ui = "0.5.0"
+noiz = "0.2.0"
+rand = "0.9.2"
