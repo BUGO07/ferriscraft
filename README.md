@@ -2,7 +2,12 @@
 
 ## star this or both sides of your pillow will be warm everyday for the rest of your life
 
+### features
+- procedural terrain generation (shit)
+- culled mesher (shit)
+- nothing else bro
+
 ### TODO
 - greedy meshing or something
-- get better perf bruh
+- move chunk gen to threads
 - make it into minecraft
