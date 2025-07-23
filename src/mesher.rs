@@ -26,17 +26,22 @@ pub struct Chunk {
     pub blocks: Vec<Block>,
 }
 
-fn push_face(mesh: &mut ChunkMesh, dir: Direction, vpos: IVec3, block_type: u32) {
-    let quad = Quad::from_direction(dir, vpos);
+const ATLAS_SIZE_X: u32 = 3;
+const ATLAS_SIZE_Y: u32 = 4;
 
-    let uv_origin = get_uvs(block_type - 1, 2);
-    let tile_size = 0.5;
+fn push_face(mesh: &mut ChunkMesh, dir: Direction, vpos: IVec3, block_type: u32) {
+    let quad = Quad::from_direction(dir, vpos, IVec3::ONE);
+
+    let uv_origin = get_uvs(block_type - 1, ATLAS_SIZE_X, ATLAS_SIZE_Y);
+
+    let tile_size_x = 1.0 / ATLAS_SIZE_X as f32;
+    let tile_size_y = 1.0 / ATLAS_SIZE_Y as f32;
 
     let uv_corners = [
         [uv_origin[0], uv_origin[1]],
-        [uv_origin[0] + tile_size, uv_origin[1]],
-        [uv_origin[0] + tile_size, uv_origin[1] + tile_size],
-        [uv_origin[0], uv_origin[1] + tile_size],
+        [uv_origin[0] + tile_size_x, uv_origin[1]],
+        [uv_origin[0] + tile_size_x, uv_origin[1] + tile_size_y],
+        [uv_origin[0], uv_origin[1] + tile_size_y],
     ];
 
     for (i, corner) in quad.corners.into_iter().enumerate() {

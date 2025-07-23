@@ -67,11 +67,11 @@ pub fn get_vertex_u32(vertex: u32) -> ([f32; 3], u32, [f32; 3], u32) {
     )
 }
 
-pub fn get_uvs(index: u32, tiles_per_row: u32) -> [f32; 2] {
-    let tile_size = 1.0 / tiles_per_row as f32;
-    let x = index / tiles_per_row;
-    let y = index % tiles_per_row;
-    [x as f32 * tile_size, y as f32 * tile_size]
+pub fn get_uvs(index: u32, x_size: u32, y_size: u32) -> [f32; 2] {
+    let x = index % x_size;
+    let y = index / x_size;
+
+    [x as f32 / x_size as f32, y as f32 / y_size as f32]
 }
 
 // I DONT FUCKING KNOW HOW TO MAKE IT BETTER SO IT IS WHAT IT IS
@@ -214,13 +214,23 @@ impl Block {
     pub const PLANK: Self = Self {
         kind: BlockKind::Plank,
     };
-
-    // change me
+    pub const BEDROCK: Self = Self {
+        kind: BlockKind::Bedrock,
+    };
+    pub const WATER: Self = Self {
+        kind: BlockKind::Water,
+    };
+    pub const SAND: Self = Self {
+        kind: BlockKind::Sand,
+    };
     pub const WOOD: Self = Self {
-        kind: BlockKind::Plank,
+        kind: BlockKind::Wood,
     };
     pub const LEAF: Self = Self {
-        kind: BlockKind::Grass,
+        kind: BlockKind::Leaf,
+    };
+    pub const SNOW: Self = Self {
+        kind: BlockKind::Snow,
     };
 }
 
@@ -233,6 +243,12 @@ pub enum BlockKind {
     Dirt,
     Grass,
     Plank,
+    Bedrock,
+    Water,
+    Sand,
+    Wood,
+    Leaf,
+    Snow,
 }
 
 impl BlockKind {
@@ -247,6 +263,12 @@ impl BlockKind {
             2 => BlockKind::Dirt,
             3 => BlockKind::Grass,
             4 => BlockKind::Plank,
+            5 => BlockKind::Bedrock,
+            6 => BlockKind::Water,
+            7 => BlockKind::Sand,
+            8 => BlockKind::Wood,
+            9 => BlockKind::Leaf,
+            10 => BlockKind::Snow,
             _ => BlockKind::Air,
         }
     }
@@ -316,42 +338,43 @@ pub struct Quad {
 
 impl Quad {
     #[inline]
-    pub fn from_direction(direction: Direction, pos: IVec3) -> Self {
+    // TODO make water be smaller than 1x1x1
+    pub fn from_direction(direction: Direction, pos: IVec3, size: IVec3) -> Self {
         let corners = match direction {
             Direction::West => [
                 [pos.x, pos.y, pos.z],
-                [pos.x, pos.y, pos.z + 1],
-                [pos.x, pos.y + 1, pos.z + 1],
-                [pos.x, pos.y + 1, pos.z],
+                [pos.x, pos.y, pos.z + size.z],
+                [pos.x, pos.y + size.y, pos.z + size.z],
+                [pos.x, pos.y + size.y, pos.z],
             ],
             Direction::East => [
-                [pos.x, pos.y + 1, pos.z],
-                [pos.x, pos.y + 1, pos.z + 1],
-                [pos.x, pos.y, pos.z + 1],
+                [pos.x, pos.y + size.y, pos.z],
+                [pos.x, pos.y + size.y, pos.z + size.z],
+                [pos.x, pos.y, pos.z + size.z],
                 [pos.x, pos.y, pos.z],
             ],
             Direction::Bottom => [
                 [pos.x, pos.y, pos.z],
-                [pos.x + 1, pos.y, pos.z],
-                [pos.x + 1, pos.y, pos.z + 1],
-                [pos.x, pos.y, pos.z + 1],
+                [pos.x + size.x, pos.y, pos.z],
+                [pos.x + size.x, pos.y, pos.z + size.z],
+                [pos.x, pos.y, pos.z + size.z],
             ],
             Direction::Top => [
-                [pos.x, pos.y, pos.z + 1],
-                [pos.x + 1, pos.y, pos.z + 1],
-                [pos.x + 1, pos.y, pos.z],
+                [pos.x, pos.y, pos.z + size.z],
+                [pos.x + size.x, pos.y, pos.z + size.z],
+                [pos.x + size.x, pos.y, pos.z],
                 [pos.x, pos.y, pos.z],
             ],
             Direction::South => [
                 [pos.x, pos.y, pos.z],
-                [pos.x, pos.y + 1, pos.z],
-                [pos.x + 1, pos.y + 1, pos.z],
-                [pos.x + 1, pos.y, pos.z],
+                [pos.x, pos.y + size.y, pos.z],
+                [pos.x + size.x, pos.y + size.y, pos.z],
+                [pos.x + size.x, pos.y, pos.z],
             ],
             Direction::North => [
-                [pos.x + 1, pos.y, pos.z],
-                [pos.x + 1, pos.y + 1, pos.z],
-                [pos.x, pos.y + 1, pos.z],
+                [pos.x + size.x, pos.y, pos.z],
+                [pos.x + size.x, pos.y + size.y, pos.z],
+                [pos.x, pos.y + size.y, pos.z],
                 [pos.x, pos.y, pos.z],
             ],
         };
