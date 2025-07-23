@@ -58,7 +58,8 @@ fn main() {
             Update,
             (
                 handle_chunk_gen,
-                handle_chunk_despawn,
+                handle_chunk_despawn
+                    .run_if(|game_settings: Res<GameSettings>| game_settings.despawn_chunks),
                 process_tasks,
                 apply_chunk_mesh,
             ),
@@ -78,6 +79,7 @@ pub struct GameInfo {
 pub struct GameSettings {
     pub movement_speed: f32,
     pub render_distance: i32,
+    pub despawn_chunks: bool,
 }
 
 pub const CHUNK_SIZE: i32 = 16; // MAX 63
@@ -102,6 +104,7 @@ fn setup(
     commands.insert_resource(GameSettings {
         movement_speed: 200.0,
         render_distance: 16,
+        despawn_chunks: true,
     });
 
     commands.spawn((
