@@ -61,24 +61,27 @@ fn main() {
                 handle_chunk_despawn
                     .run_if(|game_settings: Res<GameSettings>| game_settings.despawn_chunks),
                 process_tasks,
-                apply_chunk_mesh,
+                handle_mesh_gen,
             ),
         )
         .run();
 }
 
-#[derive(Resource, Clone)]
+#[derive(Resource)]
 pub struct GameInfo {
     pub seed: u32,
     pub chunks: Arc<RwLock<HashMap<IVec3, Chunk>>>,
     pub loading_chunks: Arc<RwLock<HashSet<IVec3>>>,
     pub materials: Vec<Handle<StandardMaterial>>,
+    pub despawn_tasks: Vec<Task<Vec<(Entity, IVec3)>>>,
 }
 
 #[derive(Reflect, Resource, Default)]
 pub struct GameSettings {
     pub movement_speed: f32,
     pub render_distance: i32,
+    pub chunk_spawn_pf: i32,
+    pub mesh_update_pf: i32,
     pub despawn_chunks: bool,
 }
 
@@ -100,10 +103,13 @@ fn setup(
             base_color_texture: Some(asset_server.load("atlas.png")),
             ..default()
         })],
+        despawn_tasks: Vec::new(),
     });
     commands.insert_resource(GameSettings {
         movement_speed: 200.0,
         render_distance: 16,
+        chunk_spawn_pf: 50,
+        mesh_update_pf: 10,
         despawn_chunks: true,
     });
 
@@ -183,16 +189,17 @@ pub fn handle_chunk_gen(
                         for y in 0..CHUNK_HEIGHT {
                             chunk.blocks[vec3_to_index(ivec3(rela_x, y, rela_z))] = Block {
                                 kind: if y == 0 {
-                                    BlockKind::Grass
+                                    BlockKind::Bedrock
                                 } else if y < max_y {
                                     match y {
-                                        _ if y > 150 => BlockKind::Stone,
+                                        _ if y > 165 => BlockKind::Snow,
+                                        _ if y > 140 => BlockKind::Stone,
                                         _ if y == max_y - 1 => BlockKind::Grass,
                                         _ if y >= max_y - 4 => BlockKind::Dirt,
                                         _ => BlockKind::Stone,
                                     }
                                 } else if y < SEA_LEVEL {
-                                    BlockKind::Plank
+                                    BlockKind::Water
                                 } else {
                                     BlockKind::Air
                                 },
@@ -205,8 +212,7 @@ pub fn handle_chunk_gen(
                             for (y, tree_layer) in TREE_OBJECT.iter().enumerate() {
                                 for (z, tree_row) in tree_layer.iter().enumerate() {
                                     for (x, block) in tree_row.iter().enumerate() {
-                                        let mut pos =
-                                            ivec3(3 + x as i32, 1 + y as i32, 3 + z as i32);
+                                        let mut pos = ivec3(3 + x as i32, y as i32, 3 + z as i32);
                                         let local_max_y = terrain_noise(
                                             (chunk.pos * CHUNK_SIZE + pos).as_vec3().xz(),
                                             seed,
@@ -247,54 +253,36 @@ pub fn handle_chunk_gen(
     }
 }
 
-fn process_tasks(
+fn handle_mesh_gen(
     mut commands: Commands,
-    mut spawn_tasks: Query<(Entity, &mut ComputeChunk)>,
-    mut despawn_tasks: Query<(Entity, &mut ComputeDespawn)>,
     game_info: Res<GameInfo>,
+    chunks_query: Query<(Entity, &Transform), Added<ChunkEntity>>,
 ) {
-    let mut processed_this_frame = 0;
-    for (entity, mut compute_task) in spawn_tasks.iter_mut() {
-        if processed_this_frame >= 250 {
-            break;
-        }
-        if let Some(result) = future::block_on(future::poll_once(&mut compute_task.0)) {
-            commands
-                .entity(entity)
-                .try_insert((
-                    ChunkEntity,
-                    Transform::from_translation((result.1 * CHUNK_SIZE).as_vec3()),
-                ))
-                .try_remove::<ComputeChunk>();
+    let thread_pool = AsyncComputeTaskPool::get();
 
-            game_info.chunks.write().unwrap().insert(result.1, result.0);
-            game_info.loading_chunks.write().unwrap().remove(&result.1);
+    for (entity, chunk_transform) in chunks_query.iter() {
+        let chunk_coords = chunk_transform.translation.as_ivec3() / CHUNK_SIZE;
 
-            processed_this_frame += 1;
-        }
-    }
+        let chunks_for_task = game_info.chunks.clone();
 
-    let mut processed_this_frame = 0;
-    for (task_entity, mut compute_task) in despawn_tasks.iter_mut() {
-        if processed_this_frame >= 1 {
-            break;
-        }
-        if let Some(despawn_list) = future::block_on(future::poll_once(&mut compute_task.0)) {
-            let mut game_chunks_write_guard = game_info.chunks.write().unwrap();
-            let mut game_loading_chunks_write_guard = game_info.loading_chunks.write().unwrap();
-            for (entity_to_despawn, chunk_key) in despawn_list {
-                commands.entity(entity_to_despawn).try_despawn();
-                game_chunks_write_guard.remove(&chunk_key);
-                game_loading_chunks_write_guard.remove(&chunk_key);
+        let task = thread_pool.spawn(async move {
+            let chunks_map_guard = chunks_for_task.read().unwrap();
+
+            let chunk_data_option = chunks_map_guard.get(&chunk_coords);
+
+            if let Some(chunk_data) = chunk_data_option {
+                build_chunk_mesh(chunk_data, &chunks_map_guard)
+            } else {
+                None
             }
-            commands.entity(task_entity).try_despawn();
-            processed_this_frame += 1;
-        }
+        });
+
+        commands.entity(entity).try_insert(ComputeChunkMesh(task));
     }
 }
 
 fn handle_chunk_despawn(
-    mut commands: Commands,
+    mut game_info: ResMut<GameInfo>,
     game_settings: Res<GameSettings>,
     chunks_query: Query<(Entity, &Transform), With<ChunkEntity>>,
     player: Single<&Transform, With<Camera3d>>,
@@ -326,51 +314,52 @@ fn handle_chunk_despawn(
         }
         despawn_list
     });
-    commands.spawn(ComputeDespawn(task));
+    game_info.despawn_tasks.push(task);
 }
 
 #[derive(Component)]
 struct ComputeChunk(Task<(Chunk, IVec3)>);
 
 #[derive(Component)]
-struct ComputeDespawn(Task<Vec<(Entity, IVec3)>>);
-
-#[derive(Component)]
 struct ComputeChunkMesh(Task<Option<ChunkMesh>>);
 
-fn apply_chunk_mesh(
+fn process_tasks(
     mut commands: Commands,
+    mut mesh_tasks: Query<(Entity, &mut ComputeChunkMesh)>,
+    mut spawn_tasks: Query<(Entity, &mut ComputeChunk)>,
+    mut game_info: ResMut<GameInfo>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut task_query: Query<(Entity, &mut ComputeChunkMesh)>,
-    game_info: Res<GameInfo>,
-    chunks_query: Query<(Entity, &Transform), Added<ChunkEntity>>,
+    game_settings: Res<GameSettings>,
 ) {
-    let thread_pool = AsyncComputeTaskPool::get();
+    // SPAWNING CHUNKS
+    let mut processed_this_frame = 0;
+    for (entity, mut compute_task) in spawn_tasks.iter_mut() {
+        if processed_this_frame >= game_settings.chunk_spawn_pf && game_settings.chunk_spawn_pf >= 0
+        {
+            break;
+        }
+        if let Some(result) = future::block_on(future::poll_once(&mut compute_task.0)) {
+            commands
+                .entity(entity)
+                .try_insert((
+                    ChunkEntity,
+                    Transform::from_translation((result.1 * CHUNK_SIZE).as_vec3()),
+                ))
+                .try_remove::<ComputeChunk>();
 
-    for (entity, chunk_transform) in chunks_query.iter() {
-        let chunk_coords = chunk_transform.translation.as_ivec3() / CHUNK_SIZE;
+            game_info.chunks.write().unwrap().insert(result.1, result.0);
+            game_info.loading_chunks.write().unwrap().remove(&result.1);
 
-        let chunks_for_task = game_info.chunks.clone();
-
-        let task = thread_pool.spawn(async move {
-            let chunks_map_guard = chunks_for_task.read().unwrap();
-
-            let chunk_data_option = chunks_map_guard.get(&chunk_coords);
-
-            if let Some(chunk_data) = chunk_data_option {
-                build_chunk_mesh(chunk_data, &chunks_map_guard)
-            } else {
-                None
-            }
-        });
-
-        commands.entity(entity).try_insert(ComputeChunkMesh(task));
+            processed_this_frame += 1;
+        }
     }
 
+    // GENERATING MESHES
     let mut processed_this_frame = 0;
 
-    for (entity, mut compute_task) in task_query.iter_mut() {
-        if processed_this_frame >= 5 {
+    for (entity, mut compute_task) in mesh_tasks.iter_mut() {
+        if processed_this_frame >= game_settings.mesh_update_pf && game_settings.chunk_spawn_pf >= 0
+        {
             break;
         }
 
@@ -409,4 +398,22 @@ fn apply_chunk_mesh(
             processed_this_frame += 1;
         }
     }
+
+    // DESPAWNING CHUNKS
+    let chunks = game_info.chunks.clone();
+    let loading_chunks = game_info.loading_chunks.clone();
+
+    game_info.despawn_tasks.retain_mut(|mut compute_task| {
+        if let Some(despawn_list) = future::block_on(future::poll_once(&mut compute_task)) {
+            let mut game_chunks_write_guard = chunks.write().unwrap();
+            let mut game_loading_chunks_write_guard = loading_chunks.write().unwrap();
+            for (entity_to_despawn, chunk_key) in despawn_list {
+                commands.entity(entity_to_despawn).try_despawn();
+                game_chunks_write_guard.remove(&chunk_key);
+                game_loading_chunks_write_guard.remove(&chunk_key);
+            }
+            return false;
+        }
+        true
+    });
 }
