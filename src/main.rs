@@ -27,14 +27,16 @@ pub mod utils;
 fn main() {
     App::new()
         .add_plugins((
-            DefaultPlugins.set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: "FerrisCraft".to_string(),
-                    mode: WindowMode::Windowed,
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "FerrisCraft".to_string(),
+                        mode: WindowMode::Windowed,
+                        ..default()
+                    }),
                     ..default()
-                }),
-                ..default()
-            }),
+                })
+                .set(ImagePlugin::default_nearest()), // for low res textures
             FrameTimeDiagnosticsPlugin::default(),
             EntityCountDiagnosticsPlugin,
             PerfUiPlugin,
