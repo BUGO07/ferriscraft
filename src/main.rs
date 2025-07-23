@@ -6,6 +6,7 @@ use std::{
 use bevy::{
     asset::RenderAssetUsages,
     diagnostic::{EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin},
+    input::common_conditions::input_just_pressed,
     prelude::*,
     render::mesh::{Indices, PrimitiveTopology},
     tasks::{AsyncComputeTaskPool, Task, futures_lite::future},
@@ -57,6 +58,7 @@ fn main() {
         .add_systems(
             Update,
             (
+                destroy_blocks.run_if(input_just_pressed(KeyCode::KeyH)),
                 handle_chunk_gen,
                 handle_chunk_despawn
                     .run_if(|game_settings: Res<GameSettings>| game_settings.despawn_chunks),
@@ -136,7 +138,67 @@ fn setup(
     ));
 }
 
-pub fn handle_chunk_gen(
+fn update_chunk(
+    commands: &mut Commands,
+    chunks: &Query<(Entity, &Transform), With<ChunkEntity>>,
+    pos: IVec3,
+) {
+    for (entity, transform) in chunks.iter() {
+        if (transform.translation / CHUNK_SIZE as f32).as_ivec3() == pos {
+            commands
+                .entity(entity)
+                .try_remove::<ChunkEntity>()
+                .try_insert(ChunkEntity);
+        }
+    }
+}
+
+// very shitty way but it works
+fn destroy_block(
+    commands: &mut Commands,
+    chunk: &mut Chunk,
+    chunk_pos: IVec3,
+    chunks: &Query<(Entity, &Transform), With<ChunkEntity>>,
+    pos: IVec3,
+) {
+    chunk.blocks[vec3_to_index(pos)] = Block::AIR;
+    if pos.x == 0 {
+        update_chunk(commands, chunks, chunk_pos - ivec3(1, 0, 0));
+    }
+    if pos.x == CHUNK_SIZE - 1 {
+        update_chunk(commands, chunks, chunk_pos + ivec3(1, 0, 0));
+    }
+    if pos.z == 0 {
+        update_chunk(commands, chunks, chunk_pos - ivec3(0, 0, 1));
+    }
+    if pos.z == CHUNK_SIZE - 1 {
+        update_chunk(commands, chunks, chunk_pos + ivec3(0, 0, 1));
+    }
+    update_chunk(commands, chunks, chunk_pos);
+}
+
+fn destroy_blocks(
+    mut commands: Commands,
+    player: Single<&Transform, With<Camera3d>>,
+    game_info: Res<GameInfo>,
+    chunks: Query<(Entity, &Transform), With<ChunkEntity>>,
+) {
+    let mut write_guard = game_info.chunks.write().unwrap();
+    let chunk_pos = (player.translation / CHUNK_SIZE as f32)
+        .as_ivec3()
+        .with_y(0);
+    let current_chunk = write_guard.get_mut(&chunk_pos).unwrap();
+    for y in 1..CHUNK_HEIGHT {
+        for x in 0..CHUNK_SIZE {
+            for z in 0..CHUNK_SIZE {
+                let pos = ivec3(x, y, z);
+                destroy_block(&mut commands, current_chunk, chunk_pos, &chunks, pos);
+            }
+        }
+    }
+}
+
+fn handle_chunk_gen(
     mut commands: Commands,
     mut movement_settings: ResMut<MovementSettings>,
     game_info: Res<GameInfo>,
@@ -156,8 +218,12 @@ pub fn handle_chunk_gen(
         {
             let current_chunk_key = ivec3(chunk_x, 0, chunk_z);
 
-            let chunks_guard = game_info.chunks.read().unwrap();
-            let loading_chunks_guard = game_info.loading_chunks.read().unwrap();
+            let Ok(chunks_guard) = game_info.chunks.read() else {
+                continue;
+            };
+            let Ok(loading_chunks_guard) = game_info.loading_chunks.read() else {
+                continue;
+            };
 
             if chunks_guard.contains_key(&current_chunk_key)
                 || loading_chunks_guard.contains(&current_chunk_key)
