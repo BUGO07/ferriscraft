@@ -17,13 +17,85 @@ pub struct ChunkMesh {
     pub uvs: Vec<[f32; 2]>,
 }
 
-#[derive(Component, Clone)]
+#[derive(Component)]
+pub struct ChunkEntity;
+
+#[derive(Clone, Reflect)]
 pub struct Chunk {
     pub pos: IVec3,
     pub blocks: Vec<Block>,
 }
 
+fn push_face(mesh: &mut ChunkMesh, dir: Direction, vpos: IVec3, block_type: u32) {
+    let quad = Quad::from_direction(dir, vpos);
+
+    let uv_origin = get_uvs(block_type - 1, 2);
+    let tile_size = 0.5;
+
+    let uv_corners = [
+        [uv_origin[0], uv_origin[1]],
+        [uv_origin[0] + tile_size, uv_origin[1]],
+        [uv_origin[0] + tile_size, uv_origin[1] + tile_size],
+        [uv_origin[0], uv_origin[1] + tile_size],
+    ];
+
+    for (i, corner) in quad.corners.into_iter().enumerate() {
+        mesh.vertices.push(make_vertex_u32(
+            IVec3::from_array(corner),
+            0,
+            dir.get_normal(),
+            block_type,
+        ));
+
+        mesh.uvs.push(uv_corners[i]);
+    }
+}
+
+pub fn build_chunk_mesh(chunks_refs: &Chunk, chunks: &HashMap<IVec3, Chunk>) -> Option<ChunkMesh> {
+    let mut mesh = ChunkMesh::default();
+    for i in 0..CHUNK_SIZE * CHUNK_HEIGHT * CHUNK_SIZE {
+        let local = index_to_vec3(i as usize);
+        let (current, back, left, down) = chunks_refs.get_adjacent_blocks(local, chunks);
+        match current.kind.is_solid() {
+            true => {
+                if !left.kind.is_solid() {
+                    push_face(&mut mesh, Direction::West, local, current.kind as u32);
+                }
+                if !back.kind.is_solid() {
+                    push_face(&mut mesh, Direction::South, local, current.kind as u32);
+                }
+                if !down.kind.is_solid() {
+                    push_face(&mut mesh, Direction::Bottom, local, current.kind as u32);
+                }
+            }
+            false => {
+                if left.kind.is_solid() {
+                    push_face(&mut mesh, Direction::East, local, left.kind as u32);
+                }
+                if back.kind.is_solid() {
+                    push_face(&mut mesh, Direction::North, local, back.kind as u32);
+                }
+                if down.kind.is_solid() {
+                    push_face(&mut mesh, Direction::Top, local, down.kind as u32);
+                }
+            }
+        }
+    }
+    if mesh.vertices.is_empty() {
+        None
+    } else {
+        mesh.indices = generate_indices(mesh.vertices.len());
+        Some(mesh)
+    }
+}
+
 impl Chunk {
+    pub fn new(pos: IVec3) -> Self {
+        Chunk {
+            pos,
+            blocks: vec![Block::default(); (CHUNK_SIZE * CHUNK_HEIGHT * CHUNK_SIZE) as usize],
+        }
+    }
     pub fn get_block(&self, pos: IVec3) -> &Block {
         let index = vec3_to_index(pos);
         if index < self.blocks.len() {
@@ -33,6 +105,30 @@ impl Chunk {
                 kind: BlockKind::Air,
             }
         }
+    }
+
+    // takes relative block position
+    // returns chunk pos
+    pub fn get_relative_chunk(&self, pos: IVec3) -> Option<IVec3> {
+        if !(0..CHUNK_HEIGHT).contains(&pos.y) {
+            return None;
+        }
+
+        let mut chunk_pos = self.pos;
+
+        if pos.x < 0 {
+            chunk_pos.x -= 1;
+        } else if pos.x >= CHUNK_SIZE {
+            chunk_pos.x += 1;
+        }
+
+        if pos.z < 0 {
+            chunk_pos.z -= 1;
+        } else if pos.z >= CHUNK_SIZE {
+            chunk_pos.z += 1;
+        }
+
+        Some(chunk_pos)
     }
 
     pub fn get_adjacent_blocks(
@@ -89,104 +185,5 @@ impl Chunk {
             (Direction::West, self.get_block(pos + ivec3(-1, 0, 0))),
             (Direction::East, self.get_block(pos + ivec3(1, 0, 0))),
         ]
-    }
-}
-
-fn push_face(mesh: &mut ChunkMesh, dir: Direction, vpos: IVec3, color: Color, block_type: u32) {
-    let quad = Quad::from_direction(dir, vpos, color);
-
-    let uv_origin = get_uvs(block_type - 1, 2);
-    let tile_size = 0.5;
-
-    let uv_corners = [
-        [uv_origin[0], uv_origin[1]],
-        [uv_origin[0] + tile_size, uv_origin[1]],
-        [uv_origin[0] + tile_size, uv_origin[1] + tile_size],
-        [uv_origin[0], uv_origin[1] + tile_size],
-    ];
-
-    for (i, corner) in quad.corners.into_iter().enumerate() {
-        mesh.vertices.push(make_vertex_u32(
-            IVec3::from_array(corner),
-            0,
-            dir.get_normal(),
-            block_type,
-        ));
-
-        mesh.uvs.push(uv_corners[i]);
-    }
-}
-
-pub fn build_chunk_mesh(chunks_refs: &Chunk, chunks: &HashMap<IVec3, Chunk>) -> Option<ChunkMesh> {
-    let mut mesh = ChunkMesh::default();
-    for i in 0..CHUNK_SIZE * CHUNK_HEIGHT * CHUNK_SIZE {
-        let local = index_to_vec3(i as usize);
-        let (current, back, left, down) = chunks_refs.get_adjacent_blocks(local, chunks);
-        match current.kind.is_solid() {
-            true => {
-                if !left.kind.is_solid() {
-                    push_face(
-                        &mut mesh,
-                        Direction::West,
-                        local,
-                        Color::srgba_u8(0, 255, 0, 255),
-                        current.kind as u32,
-                    );
-                }
-                if !back.kind.is_solid() {
-                    push_face(
-                        &mut mesh,
-                        Direction::South,
-                        local,
-                        Color::srgba_u8(0, 255, 0, 255),
-                        current.kind as u32,
-                    );
-                }
-                if !down.kind.is_solid() {
-                    push_face(
-                        &mut mesh,
-                        Direction::Bottom,
-                        local,
-                        Color::srgba_u8(0, 255, 0, 255),
-                        current.kind as u32,
-                    );
-                }
-            }
-            false => {
-                if left.kind.is_solid() {
-                    push_face(
-                        &mut mesh,
-                        Direction::East,
-                        local,
-                        Color::srgba_u8(0, 255, 0, 255),
-                        left.kind as u32,
-                    );
-                }
-                if back.kind.is_solid() {
-                    push_face(
-                        &mut mesh,
-                        Direction::North,
-                        local,
-                        Color::srgba_u8(0, 255, 0, 255),
-                        back.kind as u32,
-                    );
-                }
-                if down.kind.is_solid() {
-                    push_face(
-                        &mut mesh,
-                        Direction::Top,
-                        local,
-                        Color::srgba_u8(0, 255, 0, 255),
-                        down.kind as u32,
-                    );
-                }
-            }
-        }
-    }
-    if mesh.vertices.is_empty() {
-        None
-    } else {
-        mesh.indices = generate_indices(mesh.vertices.len());
-        Some(mesh)
     }
 }

@@ -1,7 +1,11 @@
 use bevy::prelude::*;
-use noiz::{Noise, NoiseFunction, SampleableFor};
+use noiz::{
+    Noise, NoiseFunction, SampleableFor,
+    prelude::common_noise::{Perlin, Simplex},
+    rng::NoiseRng,
+};
 
-use crate::{CHUNK_HEIGHT, CHUNK_SIZE};
+use crate::{CHUNK_HEIGHT, CHUNK_SIZE, SEA_LEVEL};
 
 #[inline]
 pub fn vec3_to_index(pos: IVec3) -> usize {
@@ -68,18 +72,75 @@ pub fn get_uvs(index: u32, tiles_per_row: u32) -> [f32; 2] {
 
 // I DONT FUCKING KNOW HOW TO MAKE IT BETTER SO IT IS WHAT IT IS
 #[inline]
-pub fn noise<T: NoiseFunction<Vec2, Output = f32>>(noise: &Noise<T>, pos: Vec2) -> f32 {
+pub fn noise<T: NoiseFunction<Vec2, Output = f32>>(noise: Noise<T>, pos: Vec2) -> f32 {
     let n: f32 = noise.sample(pos);
     (n + 1.0) / 2.0
 }
 
-#[derive(Component, Clone, Copy, Default, Debug, PartialEq, Eq)]
+#[inline]
+pub fn terrain_noise(pos: Vec2, seed: u32) -> i32 {
+    // shit way to do it
+    (noise(
+        Noise {
+            noise: Simplex::default(),
+            frequency: 0.00420,
+            seed: NoiseRng(seed),
+        },
+        pos,
+    )
+    .powf(2.0)
+        / 3.0
+        * (CHUNK_HEIGHT - SEA_LEVEL) as f32) as i32
+        + SEA_LEVEL
+    // [-1.0 .. 1.0] -> [0.0 .. 2.0] -> [0 .. CHUNK_HEIGHT - SEA_LEVEL] + SEA_LEVEL
+}
+
+#[inline]
+pub fn tree_noise(pos: Vec2, seed: u32) -> f32 {
+    noise(
+        Noise {
+            noise: Perlin::default(),
+            frequency: 0.069,
+            seed: NoiseRng(seed),
+        },
+        pos,
+    )
+}
+
+#[derive(Component, Clone, Copy, Default, Debug, PartialEq, Eq, Reflect)]
 pub struct Block {
     pub kind: BlockKind,
 }
 
+impl Block {
+    pub const DEFAULT: Self = Self::AIR;
+    pub const AIR: Self = Self {
+        kind: BlockKind::Air,
+    };
+    pub const STONE: Self = Self {
+        kind: BlockKind::Stone,
+    };
+    pub const DIRT: Self = Self {
+        kind: BlockKind::Dirt,
+    };
+    pub const GRASS: Self = Self {
+        kind: BlockKind::Grass,
+    };
+    pub const PLANK: Self = Self {
+        kind: BlockKind::Plank,
+    };
+
+    // change me
+    pub const WOOD: Self = Self {
+        kind: BlockKind::Plank,
+    };
+    pub const LEAF: Self = Self {
+        kind: BlockKind::Grass,
+    };
+}
+
 #[repr(u32)]
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, Reflect)]
 pub enum BlockKind {
     #[default]
     Air,
@@ -106,20 +167,21 @@ impl BlockKind {
     }
 }
 
-pub fn kind2color(kind: BlockKind) -> Color {
-    let color: u32 = match kind {
-        BlockKind::Air => 0x00000000,
-        BlockKind::Stone => 0xFFA39E99,
-        BlockKind::Dirt => 0xFF915E34,
-        BlockKind::Grass => 0xFF119C13,
-        BlockKind::Plank => 0xFFA39E99,
-    };
-    let b = color & 0xFF;
-    let g = (color >> 8) & 0xFF;
-    let r = (color >> 16) & 0xFF;
-    let a = (color >> 24) & 0xFF;
-    Color::srgba_u8(r as u8, g as u8, b as u8, a as u8)
-}
+// * using textures now
+// pub fn kind2color(kind: BlockKind) -> Color {
+//     let color: u32 = match kind {
+//         BlockKind::Air => 0x00000000,
+//         BlockKind::Stone => 0xFFA39E99,
+//         BlockKind::Dirt => 0xFF915E34,
+//         BlockKind::Grass => 0xFF119C13,
+//         BlockKind::Plank => 0xFFA39E99,
+//     };
+//     let b = color & 0xFF;
+//     let g = (color >> 8) & 0xFF;
+//     let r = (color >> 16) & 0xFF;
+//     let a = (color >> 24) & 0xFF;
+//     Color::srgba_u8(r as u8, g as u8, b as u8, a as u8)
+// }
 
 #[repr(u32)]
 #[derive(Clone, Copy)]
@@ -163,14 +225,13 @@ impl Direction {
 }
 
 pub struct Quad {
-    pub color: Color,
     pub direction: Direction,
     pub corners: [[i32; 3]; 4],
 }
 
 impl Quad {
     #[inline]
-    pub fn from_direction(direction: Direction, pos: IVec3, color: Color) -> Self {
+    pub fn from_direction(direction: Direction, pos: IVec3) -> Self {
         let corners = match direction {
             Direction::West => [
                 [pos.x, pos.y, pos.z],
@@ -210,10 +271,155 @@ impl Quad {
             ],
         };
 
-        Self {
-            corners,
-            color,
-            direction,
-        }
+        Self { corners, direction }
     }
 }
+
+// ai-generated tree lmao
+pub const TREE_OBJECT: [[[Block; 5]; 5]; 7] = [
+    [
+        [Block::AIR, Block::AIR, Block::AIR, Block::AIR, Block::AIR],
+        [Block::AIR, Block::AIR, Block::AIR, Block::AIR, Block::AIR],
+        [Block::AIR, Block::AIR, Block::WOOD, Block::AIR, Block::AIR],
+        [Block::AIR, Block::AIR, Block::AIR, Block::AIR, Block::AIR],
+        [Block::AIR, Block::AIR, Block::AIR, Block::AIR, Block::AIR],
+    ],
+    [
+        [Block::AIR, Block::AIR, Block::AIR, Block::AIR, Block::AIR],
+        [Block::AIR, Block::AIR, Block::AIR, Block::AIR, Block::AIR],
+        [Block::AIR, Block::AIR, Block::WOOD, Block::AIR, Block::AIR],
+        [Block::AIR, Block::AIR, Block::AIR, Block::AIR, Block::AIR],
+        [Block::AIR, Block::AIR, Block::AIR, Block::AIR, Block::AIR],
+    ],
+    [
+        [Block::AIR, Block::AIR, Block::AIR, Block::AIR, Block::AIR],
+        [Block::AIR, Block::AIR, Block::AIR, Block::AIR, Block::AIR],
+        [Block::AIR, Block::AIR, Block::WOOD, Block::AIR, Block::AIR],
+        [Block::AIR, Block::AIR, Block::AIR, Block::AIR, Block::AIR],
+        [Block::AIR, Block::AIR, Block::AIR, Block::AIR, Block::AIR],
+    ],
+    [
+        [Block::AIR, Block::AIR, Block::AIR, Block::AIR, Block::AIR],
+        [
+            Block::AIR,
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+            Block::AIR,
+        ],
+        [
+            Block::AIR,
+            Block::LEAF,
+            Block::WOOD,
+            Block::LEAF,
+            Block::AIR,
+        ],
+        [
+            Block::AIR,
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+            Block::AIR,
+        ],
+        [Block::AIR, Block::AIR, Block::AIR, Block::AIR, Block::AIR],
+    ],
+    [
+        [
+            Block::AIR,
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+            Block::AIR,
+        ],
+        [
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+        ],
+        [
+            Block::LEAF,
+            Block::LEAF,
+            Block::WOOD,
+            Block::LEAF,
+            Block::LEAF,
+        ],
+        [
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+        ],
+        [
+            Block::AIR,
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+            Block::AIR,
+        ],
+    ],
+    [
+        [
+            Block::AIR,
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+            Block::AIR,
+        ],
+        [
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+        ],
+        [
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+        ],
+        [
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+        ],
+        [
+            Block::AIR,
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+            Block::AIR,
+        ],
+    ],
+    [
+        [Block::AIR, Block::AIR, Block::AIR, Block::AIR, Block::AIR],
+        [
+            Block::AIR,
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+            Block::AIR,
+        ],
+        [
+            Block::AIR,
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+            Block::AIR,
+        ],
+        [
+            Block::AIR,
+            Block::LEAF,
+            Block::LEAF,
+            Block::LEAF,
+            Block::AIR,
+        ],
+        [Block::AIR, Block::AIR, Block::AIR, Block::AIR, Block::AIR],
+    ],
+];
