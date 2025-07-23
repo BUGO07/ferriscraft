@@ -8,17 +8,17 @@ use bevy::{
     window::WindowMode,
 };
 use bevy_flycam::{FlyCam, MovementSettings, NoCameraPlayerPlugin};
-use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
-use iyes_perf_ui::{PerfUiPlugin, prelude::PerfUiAllEntries};
-use noiz::{
-    Noise,
-    prelude::common_noise::{Perlin, Simplex},
-    rng::NoiseRng,
+use bevy_inspector_egui::{
+    bevy_egui::EguiPlugin,
+    quick::{ResourceInspectorPlugin, WorldInspectorPlugin},
 };
+use iyes_perf_ui::{PerfUiPlugin, prelude::PerfUiAllEntries};
 
 use crate::{
-    mesher::Chunk,
-    utils::{Block, BlockKind, get_vertex_u32, kind2color, noise, vec3_to_index},
+    mesher::{Chunk, ChunkEntity, build_chunk_mesh},
+    utils::{
+        Block, BlockKind, TREE_OBJECT, get_vertex_u32, terrain_noise, tree_noise, vec3_to_index,
+    },
 };
 
 pub mod mesher;
@@ -44,23 +44,25 @@ fn main() {
                 enable_multipass_for_primary_context: false,
             },
             WorldInspectorPlugin::default(),
+            ResourceInspectorPlugin::<GameSettings>::default(),
             NoCameraPlayerPlugin,
         ))
-        .insert_resource(MovementSettings {
-            speed: 100.0,
-            ..default()
-        })
+        .init_resource::<MovementSettings>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (handle_chunks, generate_chunk_mesh))
+        .add_systems(Update, (generate_chunks, apply_chunk_mesh))
         .run();
 }
 
 #[derive(Resource)]
 pub struct GameInfo {
-    pub simplex: Noise<Simplex>,
-    pub perlin: Noise<Perlin>,
+    pub seed: u32,
     pub chunks: HashMap<IVec3, Chunk>,
     pub materials: Vec<Handle<StandardMaterial>>,
+}
+
+#[derive(Resource, Reflect, Default)]
+pub struct GameSettings {
+    pub movement_speed: f32,
 }
 
 pub const CHUNK_SIZE: i32 = 16; // MAX 63
@@ -75,29 +77,15 @@ fn setup(
 ) {
     let seed = 0;
     commands.insert_resource(GameInfo {
-        simplex: Noise {
-            frequency: 0.00420,
-            noise: Simplex::default(),
-            seed: NoiseRng(seed),
-        },
-        perlin: Noise {
-            frequency: 0.0069,
-            noise: Perlin::default(),
-            seed: NoiseRng(seed),
-        },
+        seed,
         chunks: HashMap::new(),
-        materials: vec![
-            materials.add(StandardMaterial {
-                base_color: Color::srgb(1.0, 1.0, 1.0),
-                base_color_texture: Some(asset_server.load("atlas.png")),
-                ..default()
-            }),
-            materials.add(kind2color(BlockKind::Air)),
-            materials.add(kind2color(BlockKind::Stone)),
-            materials.add(kind2color(BlockKind::Dirt)),
-            materials.add(kind2color(BlockKind::Grass)),
-            materials.add(kind2color(BlockKind::Plank)),
-        ],
+        materials: vec![materials.add(StandardMaterial {
+            base_color_texture: Some(asset_server.load("atlas.png")),
+            ..default()
+        })],
+    });
+    commands.insert_resource(GameSettings {
+        movement_speed: 200.0,
     });
 
     commands.spawn((
@@ -123,12 +111,15 @@ fn setup(
     ));
 }
 
-fn handle_chunks(
+fn generate_chunks(
     mut commands: Commands,
     mut game_info: ResMut<GameInfo>,
+    mut movement_settings: ResMut<MovementSettings>,
+    game_settings: Res<GameSettings>,
     // chunks: Query<(Entity, &Chunk)>,
     player: Single<&Transform, With<Camera3d>>,
 ) {
+    movement_settings.speed = game_settings.movement_speed;
     let pt = player.translation;
     // TODO
     // for chunk in game_info.chunks.clone().keys() {
@@ -153,30 +144,15 @@ fn handle_chunks(
             if game_info.chunks.contains_key(&ivec3(chunk_x, 0, chunk_z)) {
                 continue;
             }
-            let mut chunk = Chunk {
-                pos: ivec3(chunk_x, 0, chunk_z),
-                blocks: vec![
-                    Block {
-                        kind: BlockKind::Air
-                    };
-                    (CHUNK_SIZE * CHUNK_SIZE * CHUNK_HEIGHT) as usize
-                ],
-            };
+            let mut chunk = Chunk::new(ivec3(chunk_x, 0, chunk_z));
+
             for rela_z in 0..CHUNK_SIZE {
                 for rela_x in 0..CHUNK_SIZE {
-                    // [-1.0 .. 1.0] -> [0.0 .. 2.0] -> [0 .. CHUNK_HEIGHT - SEA_LEVEL] + SEA_LEVEL
-                    let max_y = (noise(
-                        &game_info.simplex,
-                        // &game_info.perlin,
-                        vec2(
-                            (rela_x + chunk_x * CHUNK_SIZE) as f32,
-                            (rela_z + chunk_z * CHUNK_SIZE) as f32,
-                        ),
-                    )
-                    .powf(1.5)
-                        / 3.0
-                        * (CHUNK_HEIGHT - SEA_LEVEL) as f32) as i32
-                        + SEA_LEVEL;
+                    let pos = vec2(
+                        (rela_x + chunk_x * CHUNK_SIZE) as f32,
+                        (rela_z + chunk_z * CHUNK_SIZE) as f32,
+                    );
+                    let max_y = terrain_noise(pos, game_info.seed);
 
                     for y in 0..CHUNK_HEIGHT {
                         // above 105 blocks its mountainy and so its stone
@@ -195,14 +171,48 @@ fn handle_chunks(
                             },
                         };
                     }
+
+                    let tree_probabilty = tree_noise(pos, game_info.seed);
+
+                    if tree_probabilty > 0.85 && max_y < 90 {
+                        for (y, tree_layer) in TREE_OBJECT.iter().enumerate() {
+                            for (z, tree_row) in tree_layer.iter().enumerate() {
+                                for (x, block) in tree_row.iter().enumerate() {
+                                    let mut pos = ivec3(3 + x as i32, 1 + y as i32, 3 + z as i32);
+                                    // * shitty way of getting the ground height at the center of the tree
+                                    let local_max_y = terrain_noise(
+                                        // &game_info.perlin,
+                                        (chunk.pos * CHUNK_SIZE + pos).as_vec3().xz(),
+                                        game_info.seed,
+                                    );
+
+                                    pos.y += local_max_y;
+
+                                    if (0..CHUNK_SIZE).contains(&pos.x)
+                                        && (0..CHUNK_HEIGHT).contains(&pos.y)
+                                        && (0..CHUNK_SIZE).contains(&pos.z)
+                                    {
+                                        chunk.blocks[vec3_to_index(pos)] = *block;
+                                    } else {
+                                        // TODO this isn't a proper way to do it
+                                        game_info
+                                            .chunks
+                                            .get_mut(&chunk.get_relative_chunk(pos).unwrap())
+                                            .unwrap()
+                                            .blocks
+                                            .insert(vec3_to_index(pos), *block);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
             game_info
                 .chunks
                 .insert(ivec3(chunk_x, 0, chunk_z), chunk.clone());
             commands.spawn((
-                Name::new(format!("CHUNK ({chunk_x}, {chunk_z})")),
-                chunk,
+                ChunkEntity,
                 Transform::from_xyz(
                     (chunk_x * CHUNK_SIZE) as f32,
                     0.0,
@@ -214,14 +224,21 @@ fn handle_chunks(
     }
 }
 
-fn generate_chunk_mesh(
+fn apply_chunk_mesh(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     game_info: Res<GameInfo>,
-    chunks: Query<(Entity, &Chunk), Added<Chunk>>,
+    chunks: Query<(Entity, &Transform), Added<ChunkEntity>>,
 ) {
     for (entity, chunk) in chunks.iter() {
-        let mesh = mesher::build_chunk_mesh(chunk, &game_info.chunks).unwrap();
+        let mesh = build_chunk_mesh(
+            game_info
+                .chunks
+                .get(&(chunk.translation.as_ivec3() / CHUNK_SIZE))
+                .unwrap(),
+            &game_info.chunks,
+        )
+        .unwrap();
         let mut bevy_mesh = Mesh::new(
             PrimitiveTopology::TriangleList,
             RenderAssetUsages::RENDER_WORLD,
