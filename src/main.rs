@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments)]
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, RwLock},
@@ -9,20 +10,23 @@ use bevy::{
     prelude::*,
     render::mesh::{Indices, PrimitiveTopology},
     tasks::{AsyncComputeTaskPool, Task, futures_lite::future},
-    window::WindowMode,
+    window::{PrimaryWindow, WindowMode},
 };
 use bevy_flycam::{FlyCam, MovementSettings, NoCameraPlayerPlugin};
 use bevy_inspector_egui::{
     bevy_egui::EguiPlugin,
     quick::{ResourceInspectorPlugin, WorldInspectorPlugin},
 };
-use iyes_perf_ui::{PerfUiPlugin, prelude::PerfUiAllEntries};
+use iyes_perf_ui::{
+    PerfUiPlugin,
+    prelude::{PerfUiAllEntries, PerfUiEntryFPS},
+};
 
 use crate::{
-    mesher::{Chunk, ChunkEntity, ChunkMesh, build_chunk_mesh},
+    mesher::{Chunk, ChunkEntity, ChunkMesh, GameEntity, GameEntityKind, build_chunk_mesh},
     utils::{
-        Block, BlockKind, TREE_OBJECT, get_vertex_u32, place_block, ray_cast, terrain_noise,
-        tree_noise, vec3_to_index,
+        Block, BlockKind, TREE_OBJECT, ferris_noise, get_vertex_u32, place_block, ray_cast,
+        terrain_noise, tree_noise, vec3_to_index,
     },
 };
 
@@ -49,8 +53,12 @@ fn main() {
             EguiPlugin {
                 enable_multipass_for_primary_context: false,
             },
-            WorldInspectorPlugin::default(),
-            ResourceInspectorPlugin::<GameSettings>::default(),
+            WorldInspectorPlugin::default().run_if(
+                |perf_ui: Single<&Visibility, With<PerfUiEntryFPS>>| *perf_ui != Visibility::Hidden,
+            ),
+            ResourceInspectorPlugin::<GameSettings>::default().run_if(
+                |perf_ui: Single<&Visibility, With<PerfUiEntryFPS>>| *perf_ui != Visibility::Hidden,
+            ),
             NoCameraPlayerPlugin,
         ))
         .init_resource::<MovementSettings>()
@@ -75,7 +83,9 @@ pub struct GameInfo {
     pub chunks: Arc<RwLock<HashMap<IVec3, Chunk>>>,
     pub loading_chunks: Arc<RwLock<HashSet<IVec3>>>,
     pub materials: Vec<Handle<StandardMaterial>>,
+    pub models: Vec<Handle<Scene>>,
     pub despawn_tasks: Vec<Task<Vec<(Entity, IVec3)>>>,
+    pub current_block: Block,
 }
 
 #[derive(Reflect, Resource, Default)]
@@ -104,7 +114,9 @@ fn setup(
             base_color_texture: Some(asset_server.load("atlas.png")),
             ..default()
         })],
+        models: vec![asset_server.load(GltfAssetLabel::Scene(0).from_asset("ferris.glb"))],
         despawn_tasks: Vec::new(),
+        current_block: Block::STONE,
     });
     commands.insert_resource(GameSettings {
         movement_speed: 200.0,
@@ -140,11 +152,76 @@ fn setup(
 fn update(
     mut commands: Commands,
     mut gizmos: Gizmos,
-    game_info: Res<GameInfo>,
+    mut game_info: ResMut<GameInfo>,
+    mut perf_ui: Query<&mut Visibility, With<PerfUiEntryFPS>>,
+    mut hitboxes: Local<bool>,
+    mut debug_menus: Local<bool>,
+    primary_window: Single<&mut Window, With<PrimaryWindow>>,
+    game_entities: Query<(Entity, &GameEntity)>,
     chunks: Query<(Entity, &Transform), With<ChunkEntity>>,
     camera: Single<&Transform, With<Camera3d>>,
-    mouse_input: Res<ButtonInput<MouseButton>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    keyboard: Res<ButtonInput<KeyCode>>,
 ) {
+    if keyboard.just_pressed(KeyCode::F3) {
+        *debug_menus = !*debug_menus;
+    }
+
+    // f3 + h is hard to press on a 60% keyboard so f4 it is
+    if keyboard.just_pressed(KeyCode::F4) {
+        *hitboxes = !*hitboxes;
+    }
+
+    if keyboard.just_pressed(KeyCode::F11) {
+        primary_window.into_inner().mode = if primary_window.mode == WindowMode::Windowed {
+            WindowMode::BorderlessFullscreen(MonitorSelection::Current)
+        } else {
+            WindowMode::Windowed
+        }
+    }
+
+    // yeah idc
+    if keyboard.just_pressed(KeyCode::Digit1) {
+        game_info.current_block = Block::STONE;
+    } else if keyboard.just_pressed(KeyCode::Digit2) {
+        game_info.current_block = Block::DIRT;
+    } else if keyboard.just_pressed(KeyCode::Digit3) {
+        game_info.current_block = Block::GRASS;
+    } else if keyboard.just_pressed(KeyCode::Digit4) {
+        game_info.current_block = Block::PLANK;
+    } else if keyboard.just_pressed(KeyCode::Digit5) {
+        game_info.current_block = Block::BEDROCK;
+    } else if keyboard.just_pressed(KeyCode::Digit6) {
+        game_info.current_block = Block::SAND;
+    } else if keyboard.just_pressed(KeyCode::Digit7) {
+        game_info.current_block = Block::WOOD;
+    } else if keyboard.just_pressed(KeyCode::Digit8) {
+        game_info.current_block = Block::LEAF;
+    } else if keyboard.just_pressed(KeyCode::Digit9) {
+        game_info.current_block = Block::SNOW;
+    }
+
+    for mut visibility in perf_ui.iter_mut() {
+        *visibility = if *debug_menus {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        }
+    }
+
+    if *hitboxes {
+        for (_, entity) in game_entities.iter() {
+            let mut scale = vec3(1.0, 1.0, 1.0);
+            if entity.kind == GameEntityKind::Ferris {
+                scale = vec3(1.0, 0.4, 1.0);
+            }
+            gizmos.cuboid(
+                Transform::from_translation(entity.pos + scale / 2.0).with_scale(scale),
+                Color::srgb(1.0, 1.0, 1.0),
+            );
+        }
+    }
+
     let ray_origin = camera.translation;
     let ray_direction = camera.forward();
     let max_distance = 5.0;
@@ -164,7 +241,7 @@ fn update(
             Color::srgb(1.0, 0.0, 0.0),
         );
 
-        if mouse_input.just_pressed(MouseButton::Left) {
+        if mouse.just_pressed(MouseButton::Left) {
             let mut write_guard = game_info.chunks.write().unwrap();
             if let Some(chunk) = write_guard.get_mut(&chunk_pos) {
                 place_block(
@@ -177,7 +254,7 @@ fn update(
                 );
             }
         }
-        if mouse_input.just_pressed(MouseButton::Right) {
+        if mouse.just_pressed(MouseButton::Right) {
             let mut write_guard = game_info.chunks.write().unwrap();
 
             local_pos += hit.normal;
@@ -199,14 +276,16 @@ fn update(
             }
 
             if let Some(chunk) = write_guard.get_mut(&chunk_pos) {
-                place_block(
-                    &mut commands,
-                    chunk,
-                    chunk_pos,
-                    &chunks,
-                    local_pos,
-                    Block::STONE,
-                );
+                if chunk.blocks[vec3_to_index(local_pos)] == Block::AIR {
+                    place_block(
+                        &mut commands,
+                        chunk,
+                        chunk_pos,
+                        &chunks,
+                        local_pos,
+                        game_info.current_block,
+                    );
+                }
             } else {
                 warn!("placing in a chunk that doesn't exist {:?}", chunk_pos);
             }
@@ -266,9 +345,22 @@ fn handle_chunk_gen(
                             (rela_x + chunk_x * CHUNK_SIZE) as f32,
                             (rela_z + chunk_z * CHUNK_SIZE) as f32,
                         );
-                        let max_y = terrain_noise(pos, seed);
+                        let (max_y, biome) = terrain_noise(pos, seed);
 
                         for y in 0..CHUNK_HEIGHT {
+                            if y == max_y
+                                && max_y > SEA_LEVEL
+                                && biome < 0.4
+                                && ferris_noise(pos, seed) > 0.85
+                            {
+                                chunk.entities.push((
+                                    Entity::PLACEHOLDER,
+                                    GameEntity {
+                                        kind: GameEntityKind::Ferris,
+                                        pos: vec3(pos.x, y as f32, pos.y),
+                                    },
+                                ));
+                            }
                             chunk.blocks[vec3_to_index(ivec3(rela_x, y, rela_z))] = Block {
                                 kind: if y == 0 {
                                     BlockKind::Bedrock
@@ -295,12 +387,12 @@ fn handle_chunk_gen(
                                 for (z, tree_row) in tree_layer.iter().enumerate() {
                                     for (x, block) in tree_row.iter().enumerate() {
                                         let mut pos = ivec3(3 + x as i32, y as i32, 3 + z as i32);
-                                        let local_max_y = terrain_noise(
+                                        let (local_max_y, _) = terrain_noise(
                                             (chunk.pos * CHUNK_SIZE + pos).as_vec3().xz(),
                                             seed,
                                         );
 
-                                        pos.y += local_max_y as i32;
+                                        pos.y += local_max_y;
 
                                         if (0..CHUNK_SIZE).contains(&pos.x)
                                             && (0..CHUNK_HEIGHT).contains(&pos.y)
@@ -420,17 +512,27 @@ fn process_tasks(
         {
             break;
         }
-        if let Some(result) = future::block_on(future::poll_once(&mut compute_task.0)) {
+        if let Some((mut chunk, pos)) = future::block_on(future::poll_once(&mut compute_task.0)) {
+            for (entity, game_entity) in chunk.entities.iter_mut() {
+                *entity = commands
+                    .spawn((
+                        *game_entity,
+                        SceneRoot(game_info.models[game_entity.kind as usize].clone()),
+                        Transform::from_translation(game_entity.pos + vec3(0.5, 0.0, 0.5))
+                            .with_scale(Vec3::splat(2.0)),
+                    ))
+                    .id();
+            }
             commands
                 .entity(entity)
                 .try_insert((
                     ChunkEntity,
-                    Transform::from_translation((result.1 * CHUNK_SIZE).as_vec3()),
+                    Transform::from_translation((pos * CHUNK_SIZE).as_vec3()),
                 ))
                 .try_remove::<ComputeChunk>();
 
-            game_info.chunks.write().unwrap().insert(result.1, result.0);
-            game_info.loading_chunks.write().unwrap().remove(&result.1);
+            game_info.chunks.write().unwrap().insert(pos, chunk);
+            game_info.loading_chunks.write().unwrap().remove(&pos);
 
             processed_this_frame += 1;
         }
@@ -487,10 +589,23 @@ fn process_tasks(
 
     game_info.despawn_tasks.retain_mut(|mut compute_task| {
         if let Some(despawn_list) = future::block_on(future::poll_once(&mut compute_task)) {
+            let game_chunks_read_guard = chunks.read().unwrap();
+            for (_, chunk_key) in despawn_list.iter() {
+                let chunk_entities = &game_chunks_read_guard.get(chunk_key).map(|x| &x.entities);
+                if let Some(chunk_entities) = chunk_entities {
+                    for (entity, _) in chunk_entities.iter() {
+                        if *entity != Entity::PLACEHOLDER {
+                            commands.entity(*entity).try_despawn();
+                        }
+                    }
+                }
+            }
+            drop(game_chunks_read_guard);
             let mut game_chunks_write_guard = chunks.write().unwrap();
             let mut game_loading_chunks_write_guard = loading_chunks.write().unwrap();
             for (entity_to_despawn, chunk_key) in despawn_list {
                 commands.entity(entity_to_despawn).try_despawn();
+
                 game_chunks_write_guard.remove(&chunk_key);
                 game_loading_chunks_write_guard.remove(&chunk_key);
             }

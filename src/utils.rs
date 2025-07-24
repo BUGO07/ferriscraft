@@ -85,7 +85,8 @@ pub fn noise<T: NoiseFunction<Vec2, Output = f32>>(noise: Noise<T>, pos: Vec2) -
 }
 
 #[inline]
-pub fn terrain_noise(pos: Vec2, seed: u32) -> i32 {
+// max_y, biome
+pub fn terrain_noise(pos: Vec2, seed: u32) -> (i32, f32) {
     const FBM_OCTAVES: u32 = 4;
     const FBM_PERSISTENCE: f32 = 0.5;
     const FBM_LACUNARITY: f32 = 2.0;
@@ -172,7 +173,10 @@ pub fn terrain_noise(pos: Vec2, seed: u32) -> i32 {
 
     let height_range = current_max_height - current_min_height;
 
-    (current_min_height + (biased_noise * height_range)) as i32
+    (
+        (current_min_height + (biased_noise * height_range)) as i32,
+        normalized_biome_value,
+    )
 
     // height.max(1.0).min((CHUNK_HEIGHT - 1) as f32) as i32
 
@@ -189,6 +193,18 @@ pub fn tree_noise(pos: Vec2, seed: u32) -> f32 {
         Noise {
             noise: Perlin::default(),
             frequency: 0.069,
+            seed: NoiseRng(seed),
+        },
+        pos,
+    )
+}
+
+#[inline]
+pub fn ferris_noise(pos: Vec2, seed: u32) -> f32 {
+    noise(
+        Noise {
+            noise: Perlin::default(),
+            frequency: 0.42,
             seed: NoiseRng(seed),
         },
         pos,
@@ -419,7 +435,11 @@ pub enum BlockKind {
 
 impl BlockKind {
     pub fn is_solid(self) -> bool {
-        self != BlockKind::Air
+        self != BlockKind::Air && self != BlockKind::Water
+    }
+
+    pub fn is_air(self) -> bool {
+        self == BlockKind::Air
     }
 
     pub fn from_u32(value: u32) -> BlockKind {

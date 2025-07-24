@@ -20,9 +20,20 @@ pub struct ChunkMesh {
 #[derive(Component)]
 pub struct ChunkEntity;
 
-#[derive(Clone, Reflect)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GameEntityKind {
+    Ferris,
+}
+
+#[derive(Component, Clone, Copy)]
+pub struct GameEntity {
+    pub kind: GameEntityKind,
+    pub pos: Vec3,
+}
+
 pub struct Chunk {
     pub pos: IVec3,
+    pub entities: Vec<(Entity, GameEntity)>,
     pub blocks: Vec<Block>,
 }
 
@@ -61,26 +72,26 @@ pub fn build_chunk_mesh(chunks_refs: &Chunk, chunks: &HashMap<IVec3, Chunk>) -> 
     for i in 0..CHUNK_SIZE * CHUNK_HEIGHT * CHUNK_SIZE {
         let local = index_to_vec3(i as usize);
         let (current, back, left, down) = chunks_refs.get_adjacent_blocks(local, chunks);
-        match current.kind.is_solid() {
+        match !current.kind.is_air() {
             true => {
-                if !left.kind.is_solid() {
+                if left.kind.is_air() {
                     push_face(&mut mesh, Direction::West, local, current.kind as u32);
                 }
-                if !back.kind.is_solid() {
+                if back.kind.is_air() {
                     push_face(&mut mesh, Direction::South, local, current.kind as u32);
                 }
-                if !down.kind.is_solid() {
+                if down.kind.is_air() {
                     push_face(&mut mesh, Direction::Bottom, local, current.kind as u32);
                 }
             }
             false => {
-                if left.kind.is_solid() {
+                if !left.kind.is_air() {
                     push_face(&mut mesh, Direction::East, local, left.kind as u32);
                 }
-                if back.kind.is_solid() {
+                if !back.kind.is_air() {
                     push_face(&mut mesh, Direction::North, local, back.kind as u32);
                 }
-                if down.kind.is_solid() {
+                if !down.kind.is_air() {
                     push_face(&mut mesh, Direction::Top, local, down.kind as u32);
                 }
             }
@@ -98,6 +109,7 @@ impl Chunk {
     pub fn new(pos: IVec3) -> Self {
         Chunk {
             pos,
+            entities: Vec::new(),
             blocks: vec![Block::default(); (CHUNK_SIZE * CHUNK_HEIGHT * CHUNK_SIZE) as usize],
         }
     }
