@@ -23,6 +23,7 @@
 `1-9` - switch blocks\
 `f3` debug menus\
 `f4` toggle hitboxes\
+`f6` chunk borders\
 `f11` toggle fullscreen
 
 

@@ -39,14 +39,15 @@ pub struct Chunk {
     pub blocks: Vec<Block>,
 }
 
+// TODO save to disk
 pub struct SavedChunk {
     pub pos: IVec3,
     pub entities: Vec<(Entity, GameEntity)>,
-    pub blocks: HashMap<IVec3, Block>, // edited blocks
+    pub blocks: HashMap<IVec3, Block>, // placed/broken blocks
 }
 
-const ATLAS_SIZE_X: u32 = 3;
-const ATLAS_SIZE_Y: u32 = 4;
+const ATLAS_SIZE_X: u32 = 1;
+const ATLAS_SIZE_Y: u32 = 10;
 
 fn push_face(mesh: &mut ChunkMesh, dir: Direction, vpos: IVec3, block_type: u32) {
     let quad = Quad::from_direction(dir, vpos, IVec3::ONE);
@@ -199,16 +200,5 @@ impl Chunk {
         let left = get_block(pos + ivec3(-1, 0, 0)).unwrap_or_default();
         let down = get_block(pos + ivec3(0, -1, 0)).unwrap_or_default();
         (*current, back, left, down)
-    }
-
-    pub fn get_von_neumann(&self, pos: IVec3) -> Vec<(Direction, &Block)> {
-        vec![
-            (Direction::South, self.get_block(pos + ivec3(0, 0, -1))),
-            (Direction::North, self.get_block(pos + ivec3(0, 0, 1))),
-            (Direction::Bottom, self.get_block(pos + ivec3(0, -1, 0))),
-            (Direction::Top, self.get_block(pos + ivec3(0, 1, 0))),
-            (Direction::West, self.get_block(pos + ivec3(-1, 0, 0))),
-            (Direction::East, self.get_block(pos + ivec3(1, 0, 0))),
-        ]
     }
 }

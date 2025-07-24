@@ -111,6 +111,9 @@ pub const CHUNK_SIZE: i32 = 16; // MAX 63
 pub const CHUNK_HEIGHT: i32 = 256; // MAX 511
 pub const SEA_LEVEL: i32 = 64;
 
+#[derive(Component)]
+pub struct CoordsText;
+
 fn setup(
     mut commands: Commands,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -125,7 +128,7 @@ fn setup(
             base_color_texture: Some(asset_server.load("atlas.png")),
             ..default()
         })],
-        models: vec![asset_server.load(GltfAssetLabel::Scene(0).from_asset("ferris.glb"))],
+        models: vec![asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/ferris.glb"))],
         despawn_tasks: Vec::new(),
         current_block: Block::STONE,
     });
@@ -144,6 +147,21 @@ fn setup(
     ));
 
     commands.spawn(PerfUiAllEntries::default());
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                padding: UiRect::all(Val::Px(5.0)),
+                ..default()
+            },
+            GlobalZIndex(i32::MAX),
+        ))
+        .with_children(|p| {
+            p.spawn(Text::default()).with_children(|p| {
+                p.spawn((TextSpan::new("Coords: "), CoordsText));
+            });
+        });
+    // commands.spawn(Text2d::new("hello world"));
     commands.spawn((
         DirectionalLight {
             illuminance: 5_000.0,
@@ -165,6 +183,8 @@ fn update(
     mut gizmos: Gizmos,
     mut game_info: ResMut<GameInfo>,
     mut perf_ui: Query<&mut Visibility, With<PerfUiEntryFPS>>,
+    mut coords_text: Single<&mut TextSpan, With<CoordsText>>,
+    mut chunk_borders: Local<bool>,
     mut hitboxes: Local<bool>,
     mut debug_menus: Local<Option<bool>>,
     primary_window: Single<&mut Window, With<PrimaryWindow>>,
@@ -188,6 +208,10 @@ fn update(
         *hitboxes = !*hitboxes;
     }
 
+    if keyboard.just_pressed(KeyCode::F6) {
+        *chunk_borders = !*chunk_borders;
+    }
+
     if keyboard.just_pressed(KeyCode::F11) {
         primary_window.into_inner().mode = if primary_window.mode == WindowMode::Windowed {
             WindowMode::BorderlessFullscreen(MonitorSelection::Current)
@@ -195,6 +219,30 @@ fn update(
             WindowMode::Windowed
         }
     }
+
+    let (_, biome) = terrain_noise(camera.translation.xz(), game_info.seed);
+    coords_text.0 = format!(
+        "Coord: {:.02}\nBlock: {}\nChunk: {}\nBiome: {}",
+        camera.translation,
+        vec3(
+            camera.translation.x.rem_euclid(CHUNK_SIZE as f32),
+            camera.translation.y,
+            camera.translation.z.rem_euclid(CHUNK_SIZE as f32),
+        )
+        .as_ivec3(),
+        ivec2(
+            camera.translation.x.div_euclid(CHUNK_SIZE as f32) as i32,
+            camera.translation.z.div_euclid(CHUNK_SIZE as f32) as i32,
+        ),
+        // not really
+        if biome < 0.4 {
+            "Ocean"
+        } else if biome > 0.6 {
+            "Mountains"
+        } else {
+            "Plains"
+        }
+    );
 
     // yeah idc
     if keyboard.just_pressed(KeyCode::Digit1) {
@@ -240,15 +288,53 @@ fn update(
         }
     }
 
-    let ray_origin = camera.translation;
-    let ray_direction = camera.forward();
-    let max_distance = 5.0;
+    if *chunk_borders {
+        let player = camera.translation.floor();
+        let chunk_size = CHUNK_SIZE as f32;
+        let chunk_pos = vec3(
+            player.x.div_euclid(chunk_size) * chunk_size + chunk_size / 2.0,
+            CHUNK_HEIGHT as f32 / 2.0,
+            player.z.div_euclid(chunk_size) * chunk_size + chunk_size / 2.0,
+        );
+        for y in (0..CHUNK_HEIGHT).step_by(16) {
+            gizmos.rect(
+                Isometry3d::from_translation(
+                    chunk_pos.with_y(y as f32) + Vec3::Z * chunk_size / 2.0,
+                ),
+                vec2(chunk_size, chunk_size),
+                Color::srgb(0.0, 1.0, 0.0),
+            );
+            gizmos.rect(
+                Isometry3d::from_translation(
+                    chunk_pos.with_y(y as f32) - Vec3::Z * chunk_size / 2.0,
+                ),
+                vec2(chunk_size, chunk_size),
+                Color::srgb(0.0, 1.0, 0.0),
+            );
+            gizmos.rect(
+                Isometry3d::new(
+                    chunk_pos.with_y(y as f32) + Vec3::X * chunk_size / 2.0,
+                    Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                ),
+                vec2(chunk_size, chunk_size),
+                Color::srgb(0.0, 1.0, 0.0),
+            );
+            gizmos.rect(
+                Isometry3d::new(
+                    chunk_pos.with_y(y as f32) - Vec3::X * chunk_size / 2.0,
+                    Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                ),
+                vec2(chunk_size, chunk_size),
+                Color::srgb(0.0, 1.0, 0.0),
+            );
+        }
+    }
 
     if let Some(hit) = ray_cast(
         &game_info,
-        ray_origin,
-        ray_direction.as_vec3(),
-        max_distance,
+        camera.translation,
+        camera.forward().as_vec3(),
+        5.0,
     ) {
         let hit_global_position = hit.global_position;
         let mut local_pos = hit.local_pos;
