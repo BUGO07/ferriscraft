@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, hash::Hash};
 
 use bevy::prelude::*;
 
@@ -29,12 +29,20 @@ pub enum GameEntityKind {
 pub struct GameEntity {
     pub kind: GameEntityKind,
     pub pos: Vec3,
+    pub rot: Quat,
 }
 
+#[derive(Clone)]
 pub struct Chunk {
     pub pos: IVec3,
     pub entities: Vec<(Entity, GameEntity)>,
     pub blocks: Vec<Block>,
+}
+
+pub struct SavedChunk {
+    pub pos: IVec3,
+    pub entities: Vec<(Entity, GameEntity)>,
+    pub blocks: HashMap<IVec3, Block>, // edited blocks
 }
 
 const ATLAS_SIZE_X: u32 = 3;

@@ -6,9 +6,15 @@ use std::{
 
 use bevy::{
     asset::RenderAssetUsages,
-    diagnostic::{EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin},
+    diagnostic::{
+        EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin,
+        SystemInformationDiagnosticsPlugin,
+    },
     prelude::*,
-    render::mesh::{Indices, PrimitiveTopology},
+    render::{
+        diagnostic::RenderDiagnosticsPlugin,
+        mesh::{Indices, PrimitiveTopology},
+    },
     tasks::{AsyncComputeTaskPool, Task, futures_lite::future},
     window::{PrimaryWindow, WindowMode},
 };
@@ -23,7 +29,9 @@ use iyes_perf_ui::{
 };
 
 use crate::{
-    mesher::{Chunk, ChunkEntity, ChunkMesh, GameEntity, GameEntityKind, build_chunk_mesh},
+    mesher::{
+        Chunk, ChunkEntity, ChunkMesh, GameEntity, GameEntityKind, SavedChunk, build_chunk_mesh,
+    },
     utils::{
         Block, BlockKind, TREE_OBJECT, ferris_noise, get_vertex_u32, place_block, ray_cast,
         terrain_noise, tree_noise, vec3_to_index,
@@ -49,6 +57,8 @@ fn main() {
                 .set(ImagePlugin::default_nearest()), // for low res textures
             FrameTimeDiagnosticsPlugin::default(),
             EntityCountDiagnosticsPlugin,
+            RenderDiagnosticsPlugin,
+            SystemInformationDiagnosticsPlugin,
             PerfUiPlugin,
             EguiPlugin {
                 enable_multipass_for_primary_context: false,
@@ -82,6 +92,7 @@ pub struct GameInfo {
     pub seed: u32,
     pub chunks: Arc<RwLock<HashMap<IVec3, Chunk>>>,
     pub loading_chunks: Arc<RwLock<HashSet<IVec3>>>,
+    pub saved_chunks: Arc<RwLock<HashMap<IVec3, SavedChunk>>>,
     pub materials: Vec<Handle<StandardMaterial>>,
     pub models: Vec<Handle<Scene>>,
     pub despawn_tasks: Vec<Task<Vec<(Entity, IVec3)>>>,
@@ -110,6 +121,7 @@ fn setup(
         seed: 0,
         chunks: Arc::new(RwLock::new(HashMap::new())),
         loading_chunks: Arc::new(RwLock::new(HashSet::new())),
+        saved_chunks: Arc::new(RwLock::new(HashMap::new())),
         materials: vec![materials.add(StandardMaterial {
             base_color_texture: Some(asset_server.load("atlas.png")),
             ..default()
@@ -155,7 +167,7 @@ fn update(
     mut game_info: ResMut<GameInfo>,
     mut perf_ui: Query<&mut Visibility, With<PerfUiEntryFPS>>,
     mut hitboxes: Local<bool>,
-    mut debug_menus: Local<bool>,
+    mut debug_menus: Local<Option<bool>>,
     primary_window: Single<&mut Window, With<PrimaryWindow>>,
     game_entities: Query<(Entity, &GameEntity)>,
     chunks: Query<(Entity, &Transform), With<ChunkEntity>>,
@@ -163,6 +175,11 @@ fn update(
     mouse: Res<ButtonInput<MouseButton>>,
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
+    #[cfg(debug_assertions)]
+    let debug_menus = debug_menus.get_or_insert(true);
+    #[cfg(not(debug_assertions))]
+    let debug_menus = debug_menus.get_or_insert(false);
+
     if keyboard.just_pressed(KeyCode::F3) {
         *debug_menus = !*debug_menus;
     }
@@ -216,7 +233,9 @@ fn update(
                 scale = vec3(1.0, 0.4, 1.0);
             }
             gizmos.cuboid(
-                Transform::from_translation(entity.pos + scale / 2.0).with_scale(scale),
+                Transform::from_translation(entity.pos + scale / 2.0)
+                    .with_scale(scale)
+                    .with_rotation(entity.rot),
                 Color::srgb(1.0, 1.0, 1.0),
             );
         }
@@ -246,6 +265,7 @@ fn update(
             if let Some(chunk) = write_guard.get_mut(&chunk_pos) {
                 place_block(
                     &mut commands,
+                    &game_info,
                     chunk,
                     chunk_pos,
                     &chunks,
@@ -259,35 +279,38 @@ fn update(
 
             local_pos += hit.normal;
 
-            if local_pos.x < 0 {
-                local_pos.x += CHUNK_SIZE;
-                chunk_pos.x -= 1;
-            } else if local_pos.x >= CHUNK_SIZE {
-                local_pos.x -= CHUNK_SIZE;
-                chunk_pos.x += 1;
-            }
-
-            if local_pos.z < 0 {
-                local_pos.z += CHUNK_SIZE;
-                chunk_pos.z -= 1;
-            } else if local_pos.z >= CHUNK_SIZE {
-                local_pos.z -= CHUNK_SIZE;
-                chunk_pos.z += 1;
-            }
-
-            if let Some(chunk) = write_guard.get_mut(&chunk_pos) {
-                if chunk.blocks[vec3_to_index(local_pos)] == Block::AIR {
-                    place_block(
-                        &mut commands,
-                        chunk,
-                        chunk_pos,
-                        &chunks,
-                        local_pos,
-                        game_info.current_block,
-                    );
+            if local_pos.y >= 0 && local_pos.y < CHUNK_HEIGHT - 1 {
+                if local_pos.x < 0 {
+                    local_pos.x += CHUNK_SIZE;
+                    chunk_pos.x -= 1;
+                } else if local_pos.x >= CHUNK_SIZE {
+                    local_pos.x -= CHUNK_SIZE;
+                    chunk_pos.x += 1;
                 }
-            } else {
-                warn!("placing in a chunk that doesn't exist {:?}", chunk_pos);
+
+                if local_pos.z < 0 {
+                    local_pos.z += CHUNK_SIZE;
+                    chunk_pos.z -= 1;
+                } else if local_pos.z >= CHUNK_SIZE {
+                    local_pos.z -= CHUNK_SIZE;
+                    chunk_pos.z += 1;
+                }
+
+                if let Some(chunk) = write_guard.get_mut(&chunk_pos) {
+                    if chunk.blocks[vec3_to_index(local_pos)] == Block::AIR {
+                        place_block(
+                            &mut commands,
+                            &game_info,
+                            chunk,
+                            chunk_pos,
+                            &chunks,
+                            local_pos,
+                            game_info.current_block,
+                        );
+                    }
+                } else {
+                    warn!("placing in a chunk that doesn't exist {:?}", chunk_pos);
+                }
             }
         }
     }
@@ -336,8 +359,9 @@ fn handle_chunk_gen(
 
             let seed = game_info.seed;
             let chunks_for_task = game_info.chunks.clone();
+            let saved_chunks_for_task = game_info.saved_chunks.clone();
             let task = thread_pool.spawn(async move {
-                let mut chunk = Chunk::new(ivec3(chunk_x, 0, chunk_z));
+                let mut chunk = Chunk::new(current_chunk_key);
 
                 for rela_z in 0..CHUNK_SIZE {
                     for rela_x in 0..CHUNK_SIZE {
@@ -358,6 +382,9 @@ fn handle_chunk_gen(
                                     GameEntity {
                                         kind: GameEntityKind::Ferris,
                                         pos: vec3(pos.x, y as f32, pos.y),
+                                        rot: Quat::from_rotation_y(
+                                            rand::random_range(0..360) as f32
+                                        ),
                                     },
                                 ));
                             }
@@ -420,7 +447,15 @@ fn handle_chunk_gen(
                     }
                 }
 
-                (chunk, ivec3(chunk_x, 0, chunk_z))
+                let saved_chunks_guard = saved_chunks_for_task.read().unwrap();
+                if let Some(saved_chunk) = saved_chunks_guard.get(&current_chunk_key) {
+                    for (pos, block) in &saved_chunk.blocks {
+                        chunk.blocks[vec3_to_index(*pos)] = *block;
+                    }
+                    chunk.entities = saved_chunk.entities.clone();
+                }
+
+                (chunk, current_chunk_key)
             });
             commands.spawn(ComputeChunk(task));
         }
@@ -519,7 +554,8 @@ fn process_tasks(
                         *game_entity,
                         SceneRoot(game_info.models[game_entity.kind as usize].clone()),
                         Transform::from_translation(game_entity.pos + vec3(0.5, 0.0, 0.5))
-                            .with_scale(Vec3::splat(2.0)),
+                            .with_scale(Vec3::splat(2.0))
+                            .with_rotation(game_entity.rot),
                     ))
                     .id();
             }

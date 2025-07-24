@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 use bevy_inspector_egui::egui::lerp;
 use noiz::{
@@ -11,7 +13,7 @@ use noiz::{
 
 use crate::{
     CHUNK_HEIGHT, CHUNK_SIZE, GameInfo, SEA_LEVEL,
-    mesher::{Chunk, ChunkEntity},
+    mesher::{Chunk, ChunkEntity, SavedChunk},
 };
 
 #[inline]
@@ -229,6 +231,7 @@ pub fn update_chunk(
 // very shitty way but it works
 pub fn place_block(
     commands: &mut Commands,
+    game_info: &GameInfo,
     chunk: &mut Chunk,
     chunk_pos: IVec3,
     chunks: &Query<(Entity, &Transform), With<ChunkEntity>>,
@@ -236,6 +239,22 @@ pub fn place_block(
     block: Block,
 ) {
     chunk.blocks[vec3_to_index(pos)] = block;
+    let mut guard = game_info.saved_chunks.write().unwrap();
+    if guard.contains_key(&chunk_pos) {
+        let old_save = guard.get_mut(&chunk_pos).unwrap();
+        old_save.blocks.insert(pos, block);
+        drop(guard);
+    } else {
+        drop(guard);
+        game_info.saved_chunks.write().unwrap().insert(
+            chunk_pos,
+            SavedChunk {
+                pos: chunk_pos,
+                blocks: HashMap::from([(pos, block)]),
+                entities: chunk.entities.clone(),
+            },
+        );
+    }
     if pos.x == 0 {
         update_chunk(commands, chunks, chunk_pos - ivec3(1, 0, 0));
     }
