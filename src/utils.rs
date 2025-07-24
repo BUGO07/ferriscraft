@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Entry};
 
 use bevy::prelude::*;
 use bevy_inspector_egui::egui::lerp;
@@ -10,10 +10,11 @@ use noiz::{
     },
     rng::NoiseRng,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::{
     CHUNK_HEIGHT, CHUNK_SIZE, GameInfo, SEA_LEVEL,
-    mesher::{Chunk, ChunkEntity, SavedChunk},
+    mesher::{Chunk, ChunkEntity, SavedChunk, SavedWorld},
 };
 
 #[inline]
@@ -231,7 +232,7 @@ pub fn update_chunk(
 // very shitty way but it works
 pub fn place_block(
     commands: &mut Commands,
-    game_info: &GameInfo,
+    saved_chunks: &mut SavedWorld,
     chunk: &mut Chunk,
     chunk_pos: IVec3,
     chunks: &Query<(Entity, &Transform), With<ChunkEntity>>,
@@ -239,21 +240,15 @@ pub fn place_block(
     block: Block,
 ) {
     chunk.blocks[vec3_to_index(pos)] = block;
-    let mut guard = game_info.saved_chunks.write().unwrap();
-    if guard.contains_key(&chunk_pos) {
-        let old_save = guard.get_mut(&chunk_pos).unwrap();
-        old_save.blocks.insert(pos, block);
-        drop(guard);
+    if let Entry::Vacant(e) = saved_chunks.1.entry(chunk_pos) {
+        e.insert(SavedChunk {
+            pos: chunk_pos,
+            blocks: HashMap::from([(pos, block)]),
+            entities: chunk.entities.clone(),
+        });
     } else {
-        drop(guard);
-        game_info.saved_chunks.write().unwrap().insert(
-            chunk_pos,
-            SavedChunk {
-                pos: chunk_pos,
-                blocks: HashMap::from([(pos, block)]),
-                entities: chunk.entities.clone(),
-            },
-        );
+        let old_save = saved_chunks.1.get_mut(&chunk_pos).unwrap();
+        old_save.blocks.insert(pos, block);
     }
     if pos.x == 0 {
         update_chunk(commands, chunks, chunk_pos - ivec3(1, 0, 0));
@@ -393,7 +388,9 @@ pub fn ray_cast(
     None
 }
 
-#[derive(Component, Clone, Copy, Default, Debug, PartialEq, Eq, Reflect)]
+#[derive(
+    Component, Clone, Copy, Default, Debug, PartialEq, Eq, Reflect, Serialize, Deserialize,
+)]
 pub struct Block {
     pub kind: BlockKind,
 }
@@ -436,7 +433,7 @@ impl Block {
 }
 
 #[repr(u32)]
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, Reflect)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, Reflect, Serialize, Deserialize)]
 pub enum BlockKind {
     #[default]
     Air,
