@@ -1,6 +1,7 @@
 use std::{collections::HashMap, hash::Hash};
 
 use bevy::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     CHUNK_HEIGHT, CHUNK_SIZE,
@@ -20,12 +21,12 @@ pub struct ChunkMesh {
 #[derive(Component)]
 pub struct ChunkEntity;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GameEntityKind {
     Ferris,
 }
 
-#[derive(Component, Clone, Copy)]
+#[derive(Component, Clone, Copy, Serialize, Deserialize)]
 pub struct GameEntity {
     pub kind: GameEntityKind,
     pub pos: Vec3,
@@ -39,7 +40,11 @@ pub struct Chunk {
     pub blocks: Vec<Block>,
 }
 
+#[derive(Resource, Clone, Default, Serialize, Deserialize)]
+pub struct SavedWorld(pub u32, pub HashMap<IVec3, SavedChunk>);
+
 // TODO save to disk
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SavedChunk {
     pub pos: IVec3,
     pub entities: Vec<(Entity, GameEntity)>,

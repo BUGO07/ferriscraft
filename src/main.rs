@@ -1,6 +1,7 @@
 #![allow(clippy::too_many_arguments)]
 use std::{
     collections::{HashMap, HashSet},
+    path::Path,
     sync::{Arc, RwLock},
 };
 
@@ -24,6 +25,7 @@ use bevy_inspector_egui::{
     bevy_egui::EguiPlugin,
     quick::{ResourceInspectorPlugin, WorldInspectorPlugin},
 };
+use bevy_persistent::{Persistent, StorageFormat};
 use iyes_perf_ui::{
     PerfUiPlugin,
     prelude::{PerfUiAllEntries, PerfUiEntryFPS},
@@ -31,7 +33,7 @@ use iyes_perf_ui::{
 
 use crate::{
     mesher::{
-        Chunk, ChunkEntity, ChunkMesh, GameEntity, GameEntityKind, SavedChunk, build_chunk_mesh,
+        Chunk, ChunkEntity, ChunkMesh, GameEntity, GameEntityKind, SavedWorld, build_chunk_mesh,
     },
     utils::{
         Block, BlockKind, TREE_OBJECT, ferris_noise, get_vertex_u32, place_block, ray_cast,
@@ -71,6 +73,16 @@ fn main() {
             NoCameraPlayerPlugin,
         ))
         .init_resource::<MovementSettings>()
+        .init_resource::<SavedWorld>()
+        .insert_resource(
+            Persistent::<SavedWorld>::builder()
+                .name("saved chunks")
+                .format(StorageFormat::Ron)
+                .path(Path::new("saves").join("saved_chunks.ron"))
+                .default(SavedWorld::default())
+                .build()
+                .expect("failed to initialize key bindings"),
+        )
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -91,7 +103,6 @@ pub struct GameInfo {
     pub seed: u32,
     pub chunks: Arc<RwLock<HashMap<IVec3, Chunk>>>,
     pub loading_chunks: Arc<RwLock<HashSet<IVec3>>>,
-    pub saved_chunks: Arc<RwLock<HashMap<IVec3, SavedChunk>>>,
     pub materials: Vec<Handle<StandardMaterial>>,
     pub models: Vec<Handle<Scene>>,
     pub despawn_tasks: Vec<Task<Vec<(Entity, IVec3)>>>,
@@ -117,13 +128,17 @@ pub struct CoordsText;
 fn setup(
     mut commands: Commands,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut saved_chunks: ResMut<SavedWorld>,
+    persistent_saved_chunks: Res<Persistent<SavedWorld>>,
     asset_server: Res<AssetServer>,
 ) {
+    saved_chunks.0 = persistent_saved_chunks.0;
+    saved_chunks.1 = persistent_saved_chunks.1.clone();
+
     commands.insert_resource(GameInfo {
-        seed: 0,
+        seed: saved_chunks.0,
         chunks: Arc::new(RwLock::new(HashMap::new())),
         loading_chunks: Arc::new(RwLock::new(HashSet::new())),
-        saved_chunks: Arc::new(RwLock::new(HashMap::new())),
         materials: vec![materials.add(StandardMaterial {
             base_color_texture: Some(asset_server.load("atlas.png")),
             ..default()
@@ -187,6 +202,8 @@ fn update(
     mut chunk_borders: Local<bool>,
     mut hitboxes: Local<bool>,
     mut debug_menus: Local<Option<bool>>,
+    mut persistent_saved_chunks: ResMut<Persistent<SavedWorld>>,
+    saved_chunks: ResMut<SavedWorld>,
     primary_window: Single<&mut Window, With<PrimaryWindow>>,
     game_entities: Query<(Entity, &GameEntity)>,
     chunks: Query<(Entity, &Transform), With<ChunkEntity>>,
@@ -198,6 +215,15 @@ fn update(
     let debug_menus = debug_menus.get_or_insert(true);
     #[cfg(not(debug_assertions))]
     let debug_menus = debug_menus.get_or_insert(false);
+
+    if keyboard.just_pressed(KeyCode::F1) {
+        persistent_saved_chunks
+            .update(|sc| {
+                sc.0 = saved_chunks.0;
+                sc.1 = saved_chunks.1.clone()
+            })
+            .unwrap();
+    }
 
     if keyboard.just_pressed(KeyCode::F3) {
         *debug_menus = !*debug_menus;
@@ -350,7 +376,7 @@ fn update(
             if let Some(chunk) = write_guard.get_mut(&chunk_pos) {
                 place_block(
                     &mut commands,
-                    &game_info,
+                    saved_chunks.into_inner(),
                     chunk,
                     chunk_pos,
                     &chunks,
@@ -358,8 +384,7 @@ fn update(
                     Block::AIR,
                 );
             }
-        }
-        if mouse.just_pressed(MouseButton::Right) {
+        } else if mouse.just_pressed(MouseButton::Right) {
             let mut write_guard = game_info.chunks.write().unwrap();
 
             local_pos += hit.normal;
@@ -385,7 +410,7 @@ fn update(
                     if chunk.blocks[vec3_to_index(local_pos)] == Block::AIR {
                         place_block(
                             &mut commands,
-                            &game_info,
+                            saved_chunks.into_inner(),
                             chunk,
                             chunk_pos,
                             &chunks,
@@ -404,6 +429,7 @@ fn update(
 fn handle_chunk_gen(
     mut commands: Commands,
     mut movement_settings: ResMut<MovementSettings>,
+    saved_chunks: Res<SavedWorld>,
     game_info: Res<GameInfo>,
     game_settings: Res<GameSettings>,
     player: Single<&Transform, With<Camera3d>>,
@@ -444,7 +470,7 @@ fn handle_chunk_gen(
 
             let seed = game_info.seed;
             let chunks_for_task = game_info.chunks.clone();
-            let saved_chunks_for_task = game_info.saved_chunks.clone();
+            let saved_chunks = saved_chunks.clone();
             let task = thread_pool.spawn(async move {
                 let mut chunk = Chunk::new(current_chunk_key);
 
@@ -532,8 +558,7 @@ fn handle_chunk_gen(
                     }
                 }
 
-                let saved_chunks_guard = saved_chunks_for_task.read().unwrap();
-                if let Some(saved_chunk) = saved_chunks_guard.get(&current_chunk_key) {
+                if let Some(saved_chunk) = saved_chunks.1.get(&current_chunk_key) {
                     for (pos, block) in &saved_chunk.blocks {
                         chunk.blocks[vec3_to_index(*pos)] = *block;
                     }

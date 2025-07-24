@@ -7,6 +7,7 @@
 - culled mesher
 - decent terrain (trees, mountains, water, etc...)
 - place/break blocks
+- save game
 - little ferris entities
 - what more do you want bro
 
@@ -21,6 +22,7 @@
 `WASD/Space` - movement\
 `LMB/RMB` - place/break blocks\
 `1-9` - switch blocks\
+`f1` save game\
 `f3` debug menus\
 `f4` toggle hitboxes\
 `f6` chunk borders\
