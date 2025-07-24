@@ -6,10 +6,10 @@
 - blazingly fast procedural terrain generation (shit)
 - culled mesher
 - decent terrain (trees, mountains, water, etc...)
-- destroy blocks
+- place/break blocks
 - what more do you want bro
 
 ### TODO
 - greedy meshing or something
-- destroy/place blocks wherever the camera is looking at
+- character controller instead of flycam
 - make it into minecraft

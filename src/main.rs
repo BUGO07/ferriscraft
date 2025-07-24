@@ -6,7 +6,6 @@ use std::{
 use bevy::{
     asset::RenderAssetUsages,
     diagnostic::{EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin},
-    input::common_conditions::input_just_pressed,
     prelude::*,
     render::mesh::{Indices, PrimitiveTopology},
     tasks::{AsyncComputeTaskPool, Task, futures_lite::future},
@@ -22,7 +21,8 @@ use iyes_perf_ui::{PerfUiPlugin, prelude::PerfUiAllEntries};
 use crate::{
     mesher::{Chunk, ChunkEntity, ChunkMesh, build_chunk_mesh},
     utils::{
-        Block, BlockKind, TREE_OBJECT, get_vertex_u32, terrain_noise, tree_noise, vec3_to_index,
+        Block, BlockKind, TREE_OBJECT, get_vertex_u32, place_block, ray_cast, terrain_noise,
+        tree_noise, vec3_to_index,
     },
 };
 
@@ -58,7 +58,7 @@ fn main() {
         .add_systems(
             Update,
             (
-                destroy_blocks.run_if(input_just_pressed(KeyCode::KeyH)),
+                update,
                 handle_chunk_gen,
                 handle_chunk_despawn
                     .run_if(|game_settings: Res<GameSettings>| game_settings.despawn_chunks),
@@ -96,9 +96,8 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
 ) {
-    let seed = 0;
     commands.insert_resource(GameInfo {
-        seed,
+        seed: 0,
         chunks: Arc::new(RwLock::new(HashMap::new())),
         loading_chunks: Arc::new(RwLock::new(HashSet::new())),
         materials: vec![materials.add(StandardMaterial {
@@ -138,61 +137,78 @@ fn setup(
     ));
 }
 
-fn update_chunk(
-    commands: &mut Commands,
-    chunks: &Query<(Entity, &Transform), With<ChunkEntity>>,
-    pos: IVec3,
-) {
-    for (entity, transform) in chunks.iter() {
-        if (transform.translation / CHUNK_SIZE as f32).as_ivec3() == pos {
-            commands
-                .entity(entity)
-                .try_remove::<ChunkEntity>()
-                .try_insert(ChunkEntity);
-        }
-    }
-}
-
-// very shitty way but it works
-fn destroy_block(
-    commands: &mut Commands,
-    chunk: &mut Chunk,
-    chunk_pos: IVec3,
-    chunks: &Query<(Entity, &Transform), With<ChunkEntity>>,
-    pos: IVec3,
-) {
-    chunk.blocks[vec3_to_index(pos)] = Block::AIR;
-    if pos.x == 0 {
-        update_chunk(commands, chunks, chunk_pos - ivec3(1, 0, 0));
-    }
-    if pos.x == CHUNK_SIZE - 1 {
-        update_chunk(commands, chunks, chunk_pos + ivec3(1, 0, 0));
-    }
-    if pos.z == 0 {
-        update_chunk(commands, chunks, chunk_pos - ivec3(0, 0, 1));
-    }
-    if pos.z == CHUNK_SIZE - 1 {
-        update_chunk(commands, chunks, chunk_pos + ivec3(0, 0, 1));
-    }
-    update_chunk(commands, chunks, chunk_pos);
-}
-
-fn destroy_blocks(
+fn update(
     mut commands: Commands,
-    player: Single<&Transform, With<Camera3d>>,
+    mut gizmos: Gizmos,
     game_info: Res<GameInfo>,
     chunks: Query<(Entity, &Transform), With<ChunkEntity>>,
+    camera: Single<&Transform, With<Camera3d>>,
+    mouse_input: Res<ButtonInput<MouseButton>>,
 ) {
-    let mut write_guard = game_info.chunks.write().unwrap();
-    let chunk_pos = (player.translation / CHUNK_SIZE as f32)
-        .as_ivec3()
-        .with_y(0);
-    let current_chunk = write_guard.get_mut(&chunk_pos).unwrap();
-    for y in 1..CHUNK_HEIGHT {
-        for x in 0..CHUNK_SIZE {
-            for z in 0..CHUNK_SIZE {
-                let pos = ivec3(x, y, z);
-                destroy_block(&mut commands, current_chunk, chunk_pos, &chunks, pos);
+    let ray_origin = camera.translation;
+    let ray_direction = camera.forward();
+    let max_distance = 5.0;
+
+    if let Some(hit) = ray_cast(
+        &game_info,
+        ray_origin,
+        ray_direction.as_vec3(),
+        max_distance,
+    ) {
+        let hit_global_position = hit.global_position;
+        let mut local_pos = hit.local_pos;
+        let mut chunk_pos = hit.chunk_pos;
+
+        gizmos.cuboid(
+            Transform::from_translation(hit_global_position.as_vec3() + Vec3::splat(0.5)),
+            Color::srgb(1.0, 0.0, 0.0),
+        );
+
+        if mouse_input.just_pressed(MouseButton::Left) {
+            let mut write_guard = game_info.chunks.write().unwrap();
+            if let Some(chunk) = write_guard.get_mut(&chunk_pos) {
+                place_block(
+                    &mut commands,
+                    chunk,
+                    chunk_pos,
+                    &chunks,
+                    local_pos,
+                    Block::AIR,
+                );
+            }
+        }
+        if mouse_input.just_pressed(MouseButton::Right) {
+            let mut write_guard = game_info.chunks.write().unwrap();
+
+            local_pos += hit.normal;
+
+            if local_pos.x < 0 {
+                local_pos.x += CHUNK_SIZE;
+                chunk_pos.x -= 1;
+            } else if local_pos.x >= CHUNK_SIZE {
+                local_pos.x -= CHUNK_SIZE;
+                chunk_pos.x += 1;
+            }
+
+            if local_pos.z < 0 {
+                local_pos.z += CHUNK_SIZE;
+                chunk_pos.z -= 1;
+            } else if local_pos.z >= CHUNK_SIZE {
+                local_pos.z -= CHUNK_SIZE;
+                chunk_pos.z += 1;
+            }
+
+            if let Some(chunk) = write_guard.get_mut(&chunk_pos) {
+                place_block(
+                    &mut commands,
+                    chunk,
+                    chunk_pos,
+                    &chunks,
+                    local_pos,
+                    Block::STONE,
+                );
+            } else {
+                warn!("placing in a chunk that doesn't exist {:?}", chunk_pos);
             }
         }
     }
