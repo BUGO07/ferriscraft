@@ -14,6 +14,7 @@ use bevy::{
     render::{
         diagnostic::RenderDiagnosticsPlugin,
         mesh::{Indices, PrimitiveTopology},
+        primitives::Aabb,
     },
     tasks::{AsyncComputeTaskPool, Task, futures_lite::future},
     window::{PrimaryWindow, WindowMode},
@@ -60,9 +61,7 @@ fn main() {
             RenderDiagnosticsPlugin,
             SystemInformationDiagnosticsPlugin,
             PerfUiPlugin,
-            EguiPlugin {
-                enable_multipass_for_primary_context: false,
-            },
+            EguiPlugin::default(),
             WorldInspectorPlugin::default().run_if(
                 |perf_ui: Single<&Visibility, With<PerfUiEntryFPS>>| *perf_ui != Visibility::Hidden,
             ),
@@ -563,6 +562,10 @@ fn process_tasks(
                 .entity(entity)
                 .try_insert((
                     ChunkEntity,
+                    Aabb::from_min_max(
+                        vec3(0.0, 0.0, 0.0),
+                        vec3(CHUNK_SIZE as f32, CHUNK_HEIGHT as f32, CHUNK_SIZE as f32),
+                    ),
                     Transform::from_translation((pos * CHUNK_SIZE).as_vec3()),
                 ))
                 .try_remove::<ComputeChunk>();
