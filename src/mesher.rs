@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     CHUNK_HEIGHT, CHUNK_SIZE,
     utils::{
-        Block, BlockKind, Direction, Quad, generate_indices, get_uvs, index_to_vec3,
-        make_vertex_u32, vec3_to_index,
+        Block, BlockKind, Direction, Quad, generate_indices, index_to_vec3, make_vertex_u32,
+        vec3_to_index,
     },
 };
 
@@ -51,21 +51,19 @@ pub struct SavedChunk {
     pub blocks: HashMap<IVec3, Block>, // placed/broken blocks
 }
 
-const ATLAS_SIZE_X: u32 = 1;
-const ATLAS_SIZE_Y: u32 = 10;
+const ATLAS_SIZE: u32 = 10;
 
 fn push_face(mesh: &mut ChunkMesh, dir: Direction, vpos: IVec3, block_type: u32) {
     let quad = Quad::from_direction(dir, vpos, IVec3::ONE);
 
-    let uv_origin = get_uvs(block_type - 1, ATLAS_SIZE_X, ATLAS_SIZE_Y);
+    let uv_origin = [0.0, (block_type - 1) as f32 / ATLAS_SIZE as f32];
 
-    let tile_size_x = 1.0 / ATLAS_SIZE_X as f32;
-    let tile_size_y = 1.0 / ATLAS_SIZE_Y as f32;
+    let tile_size_y = 1.0 / ATLAS_SIZE as f32;
 
     let uv_corners = [
         [uv_origin[0], uv_origin[1]],
-        [uv_origin[0] + tile_size_x, uv_origin[1]],
-        [uv_origin[0] + tile_size_x, uv_origin[1] + tile_size_y],
+        [uv_origin[0] + 1.0, uv_origin[1]],
+        [uv_origin[0] + 1.0, uv_origin[1] + tile_size_y],
         [uv_origin[0], uv_origin[1] + tile_size_y],
     ];
 

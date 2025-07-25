@@ -1,4 +1,4 @@
-# Blazingly fast voxel game made in pure rust
+# FerrisCraft - Blazingly fast voxel game made in pure rust
 
 ## Star this or both sides of your pillow will be warm everyday for the rest of your life :]
 
@@ -6,6 +6,7 @@
 - blazingly fast procedural terrain generation (shit)
 - culled mesher
 - decent terrain (trees, mountains, water, etc...)
+- first person character controller
 - place/break blocks
 - save game
 - little ferris entities
@@ -20,8 +21,10 @@
 
 ### Controls
 `WASD/Space` - movement\
+`LControl` - sprint
 `LMB/RMB` - place/break blocks\
 `1-9/ScrollWheel+-` - switch blocks\
+`C` - zoom\
 `f1` save game\
 `f3` debug menus\
 `f4` toggle hitboxes\
@@ -31,7 +34,6 @@
 
 ### TODO
 - greedy meshing or something
-- first/third character controllers instead of flycam
 - better ferris spawning
 - make it into minecraft
 

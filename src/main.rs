@@ -1,4 +1,5 @@
-#![allow(clippy::too_many_arguments)]
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
+
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
@@ -11,7 +12,7 @@ use bevy::{
         EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin,
         SystemInformationDiagnosticsPlugin,
     },
-    input::mouse::MouseWheel,
+    input::{common_conditions::input_just_pressed, mouse::MouseWheel},
     prelude::*,
     render::{
         diagnostic::RenderDiagnosticsPlugin,
@@ -21,7 +22,6 @@ use bevy::{
     tasks::{AsyncComputeTaskPool, Task, futures_lite::future},
     window::{PrimaryWindow, WindowMode},
 };
-use bevy_flycam::{FlyCam, MovementSettings, NoCameraPlayerPlugin};
 use bevy_inspector_egui::{
     bevy_egui::EguiPlugin,
     quick::{ResourceInspectorPlugin, WorldInspectorPlugin},
@@ -37,6 +37,9 @@ use crate::{
         Chunk, ChunkEntity, ChunkMesh, GameEntity, GameEntityKind, SavedChunk, SavedWorld,
         build_chunk_mesh,
     },
+    player::{
+        Player, PlayerCamera, Velocity, camera_movement, player_movement, toggle_grab_cursor,
+    },
     utils::{
         Block, BlockKind, TREE_OBJECT, ferris_noise, get_vertex_u32, place_block, ray_cast,
         terrain_noise, tree_noise, vec3_to_index,
@@ -44,7 +47,11 @@ use crate::{
 };
 
 pub mod mesher;
+pub mod player;
 pub mod utils;
+
+#[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone)]
+pub struct PausableSystems;
 
 fn main() {
     App::new()
@@ -72,32 +79,48 @@ fn main() {
             ResourceInspectorPlugin::<GameSettings>::default().run_if(
                 |perf_ui: Single<&Visibility, With<PerfUiEntryFPS>>| *perf_ui != Visibility::Hidden,
             ),
-            NoCameraPlayerPlugin,
         ))
-        .init_resource::<MovementSettings>()
         .init_resource::<SavedWorld>()
         .insert_resource(
             Persistent::<SavedWorld>::builder()
-                .name("saved chunks")
-                .format(StorageFormat::Ron)
-                .path(Path::new("saves").join("saved_chunks.ron"))
+                .name("saved world")
+                .format(StorageFormat::Bincode)
+                .path(Path::new("saves").join("saved_world.ferris"))
                 .default(SavedWorld::default())
                 .build()
                 .unwrap(),
+        )
+        .configure_sets(
+            Update,
+            PausableSystems.run_if(|settings: Res<GameSettings>| !settings.paused),
         )
         .add_systems(Startup, setup)
         .add_systems(
             Update,
             (
-                update,
-                handle_chunk_gen,
-                handle_chunk_despawn
-                    .run_if(|game_settings: Res<GameSettings>| game_settings.despawn_chunks),
-                process_tasks,
-                handle_mesh_gen,
+                toggle_pause.run_if(input_just_pressed(KeyCode::Escape)),
+                (
+                    player_movement,
+                    camera_movement,
+                    update,
+                    handle_chunk_gen,
+                    handle_chunk_despawn
+                        .run_if(|game_settings: Res<GameSettings>| game_settings.despawn_chunks),
+                    process_tasks,
+                    handle_mesh_gen,
+                )
+                    .in_set(PausableSystems),
             ),
         )
         .run();
+}
+
+fn toggle_pause(
+    mut game_settings: ResMut<GameSettings>,
+    mut window: Single<&mut Window, With<PrimaryWindow>>,
+) {
+    game_settings.paused = !game_settings.paused;
+    toggle_grab_cursor(&mut window);
 }
 
 #[derive(Resource)]
@@ -109,23 +132,29 @@ pub struct GameInfo {
     pub models: Vec<Handle<Scene>>,
     pub despawn_tasks: Vec<Task<Vec<(Entity, IVec3)>>>,
     pub current_block: Block,
+    pub loaded: bool,
 }
 
 #[derive(Reflect, Resource, Default)]
 pub struct GameSettings {
     pub movement_speed: f32,
+    pub sensitivity: f32,
     pub render_distance: i32,
     pub chunk_spawn_pf: i32,
     pub mesh_update_pf: i32,
+    pub fov: u32,
+    pub gravity: f32,
+    pub jump_force: f32,
     pub despawn_chunks: bool,
     pub debug_menus: bool,
     pub hitboxes: bool,
     pub chunk_borders: bool,
+    pub paused: bool,
 }
 
 pub const CHUNK_SIZE: i32 = 16; // MAX 63
 pub const CHUNK_HEIGHT: i32 = 256; // MAX 511
-pub const SEA_LEVEL: i32 = 64;
+pub const SEA_LEVEL: i32 = 64; // MAX CHUNK_HEIGHT - 180
 
 #[derive(Component)]
 pub struct CoordsText;
@@ -134,6 +163,7 @@ fn setup(
     mut commands: Commands,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut saved_chunks: ResMut<SavedWorld>,
+    mut window: Single<&mut Window, With<PrimaryWindow>>,
     persistent_saved_chunks: Res<Persistent<SavedWorld>>,
     asset_server: Res<AssetServer>,
 ) {
@@ -151,12 +181,17 @@ fn setup(
         models: vec![asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/ferris.glb"))],
         despawn_tasks: Vec::new(),
         current_block: Block::STONE,
+        loaded: false,
     });
     commands.insert_resource(GameSettings {
-        movement_speed: 200.0,
+        movement_speed: 3.0,
+        sensitivity: 1.2,
+        fov: 60,
         render_distance: 16,
         chunk_spawn_pf: 50,
         mesh_update_pf: 10,
+        gravity: 23.31,
+        jump_force: 7.7,
         despawn_chunks: true,
         #[cfg(debug_assertions)]
         debug_menus: true,
@@ -164,13 +199,31 @@ fn setup(
         debug_menus: false,
         hitboxes: false,
         chunk_borders: false,
+        paused: false,
     });
+
+    let player = commands
+        .spawn((
+            Transform::from_xyz(
+                0.0,
+                1.0 + terrain_noise(Vec2::ZERO, saved_chunks.0).0 as f32,
+                0.0,
+            ),
+            Aabb::from_min_max(vec3(-0.5, 0.0, -0.5), vec3(0.5, 1.8, 0.5)),
+            Player,
+            Velocity::default(),
+            Visibility::Visible,
+        ))
+        .id();
 
     commands.spawn((
         Camera3d::default(),
-        FlyCam,
-        Transform::from_xyz(5.0, CHUNK_HEIGHT as f32, -5.0).looking_at(Vec3::ZERO, Vec3::Y),
+        PlayerCamera,
+        Transform::from_xyz(0.0, 1.62, -0.05).looking_at(Vec3::ZERO, Vec3::Y), // minecraft way
+        ChildOf(player),
     ));
+
+    toggle_grab_cursor(&mut window);
 
     commands.spawn(PerfUiAllEntries::default());
     commands
@@ -214,10 +267,11 @@ fn update(
     mut primary_window: Single<&mut Window, With<PrimaryWindow>>,
     mut mouse_scroll: EventReader<MouseWheel>,
     mut game_settings: ResMut<GameSettings>,
+    mut camera: Single<(&Transform, &mut Projection), (With<PlayerCamera>, Without<Player>)>,
+    player: Single<&Transform, (With<Player>, Without<PlayerCamera>)>,
     saved_chunks: ResMut<SavedWorld>,
     game_entities: Query<(Entity, &GameEntity)>,
     chunks: Query<(Entity, &Transform), With<ChunkEntity>>,
-    camera: Single<&Transform, With<Camera3d>>,
     mouse: Res<ButtonInput<MouseButton>>,
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
@@ -261,6 +315,17 @@ fn update(
         }
     }
 
+    let fov = if keyboard.pressed(KeyCode::KeyC) {
+        10.0
+    } else {
+        game_settings.fov as f32
+    };
+
+    *camera.1 = Projection::Perspective(PerspectiveProjection {
+        fov: fov.to_radians(),
+        ..default()
+    });
+
     for ev in mouse_scroll.read() {
         let dir = ev.y.signum();
         let mut next = game_info.current_block.kind as i32 + dir as i32;
@@ -277,19 +342,19 @@ fn update(
         }
     }
 
-    let (_, biome) = terrain_noise(camera.translation.xz(), game_info.seed);
+    let (_, biome) = terrain_noise(player.translation.xz(), game_info.seed);
     coords_text.0 = format!(
         "Coord: {:.02}\nBlock: {}\nChunk: {}\nBiome: {}\nIn Hand: {:?}",
-        camera.translation,
+        player.translation,
         vec3(
-            camera.translation.x.rem_euclid(CHUNK_SIZE as f32),
-            camera.translation.y,
-            camera.translation.z.rem_euclid(CHUNK_SIZE as f32),
+            player.translation.x.rem_euclid(CHUNK_SIZE as f32),
+            player.translation.y,
+            player.translation.z.rem_euclid(CHUNK_SIZE as f32),
         )
         .as_ivec3(),
         ivec2(
-            camera.translation.x.div_euclid(CHUNK_SIZE as f32) as i32,
-            camera.translation.z.div_euclid(CHUNK_SIZE as f32) as i32,
+            player.translation.x.div_euclid(CHUNK_SIZE as f32) as i32,
+            player.translation.z.div_euclid(CHUNK_SIZE as f32) as i32,
         ),
         // not really
         if biome < 0.4 {
@@ -326,7 +391,7 @@ fn update(
     }
 
     if game_settings.chunk_borders {
-        let player = camera.translation.floor();
+        let player = player.translation.floor();
         let chunk_size = CHUNK_SIZE as f32;
         let mut chunk_size_vec = vec2(chunk_size, chunk_size);
         let chunk_pos = vec3(
@@ -377,8 +442,8 @@ fn update(
 
     if let Some(hit) = ray_cast(
         &game_info,
-        camera.translation,
-        camera.forward().as_vec3(),
+        player.translation + camera.0.translation,
+        camera.0.forward().as_vec3(),
         5.0,
     ) {
         let hit_global_position = hit.global_position;
@@ -447,13 +512,11 @@ fn update(
 
 fn handle_chunk_gen(
     mut commands: Commands,
-    mut movement_settings: ResMut<MovementSettings>,
     saved_chunks: Res<SavedWorld>,
     game_info: Res<GameInfo>,
     game_settings: Res<GameSettings>,
-    player: Single<&Transform, With<Camera3d>>,
+    player: Single<&Transform, With<Player>>,
 ) {
-    movement_settings.speed = game_settings.movement_speed;
     let pt = player.translation;
     let thread_pool = AsyncComputeTaskPool::get();
     let render_distance = game_settings.render_distance;
@@ -621,7 +684,7 @@ fn handle_chunk_despawn(
     mut game_info: ResMut<GameInfo>,
     game_settings: Res<GameSettings>,
     chunks_query: Query<(Entity, &Transform), With<ChunkEntity>>,
-    player: Single<&Transform, With<Camera3d>>,
+    player: Single<&Transform, With<Player>>,
 ) {
     let pt = player.translation;
     let thread_pool = AsyncComputeTaskPool::get();
@@ -766,6 +829,16 @@ fn process_tasks(
     // DESPAWNING CHUNKS
     let chunks = game_info.chunks.clone();
     let loading_chunks = game_info.loading_chunks.clone();
+
+    if !game_info.loaded {
+        let read_guard = chunks.read().unwrap();
+        if read_guard.len()
+            == ((game_settings.render_distance * 2) * (game_settings.render_distance * 2)) as usize
+        {
+            game_info.loaded = true;
+        }
+        drop(read_guard);
+    }
 
     game_info.despawn_tasks.retain_mut(|mut compute_task| {
         if let Some(despawn_list) = future::block_on(future::poll_once(&mut compute_task)) {

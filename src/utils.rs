@@ -73,14 +73,6 @@ pub fn get_vertex_u32(vertex: u32) -> ([f32; 3], u32, [f32; 3], u32) {
     )
 }
 
-pub fn get_uvs(index: u32, x_size: u32, y_size: u32) -> [f32; 2] {
-    let x = index % x_size;
-    let y = index / x_size;
-
-    [x as f32 / x_size as f32, y as f32 / y_size as f32]
-}
-
-// I DONT FUCKING KNOW HOW TO MAKE IT BETTER SO IT IS WHAT IT IS
 #[inline]
 pub fn noise<T: NoiseFunction<Vec2, Output = f32>>(noise: Noise<T>, pos: Vec2) -> f32 {
     let n: f32 = noise.sample(pos);
@@ -265,6 +257,7 @@ pub fn place_block(
     update_chunk(commands, chunks, chunk_pos);
 }
 
+#[derive(Debug)]
 pub struct RayHit {
     pub global_position: IVec3,
     pub chunk_pos: IVec3,
