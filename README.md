@@ -21,7 +21,7 @@
 ### Controls
 `WASD/Space` - movement\
 `LMB/RMB` - place/break blocks\
-`1-9` - switch blocks\
+`1-9/ScrollWheel+-` - switch blocks\
 `f1` save game\
 `f3` debug menus\
 `f4` toggle hitboxes\
