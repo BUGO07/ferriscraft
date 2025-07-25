@@ -74,6 +74,22 @@ pub fn get_vertex_u32(vertex: u32) -> ([f32; 3], u32, [f32; 3], u32) {
 }
 
 #[inline]
+pub fn aabb_collision(pos1: Vec3, size1: Vec3, pos2: Vec3, size2: Vec3) -> bool {
+    let min1 = pos1;
+    let max1 = pos1 + size1;
+
+    let min2 = pos2;
+    let max2 = pos2 + size2;
+
+    min1.x < max2.x
+        && max1.x > min2.x
+        && min1.y < max2.y
+        && max1.y > min2.y
+        && min1.z < max2.z
+        && max1.z > min2.z
+}
+
+#[inline]
 pub fn noise<T: NoiseFunction<Vec2, Output = f32>>(noise: Noise<T>, pos: Vec2) -> f32 {
     let n: f32 = noise.sample(pos);
     (n + 1.0) / 2.0

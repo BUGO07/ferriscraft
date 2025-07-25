@@ -41,8 +41,8 @@ use crate::{
         Player, PlayerCamera, Velocity, camera_movement, player_movement, toggle_grab_cursor,
     },
     utils::{
-        Block, BlockKind, TREE_OBJECT, ferris_noise, get_vertex_u32, place_block, ray_cast,
-        terrain_noise, tree_noise, vec3_to_index,
+        Block, BlockKind, TREE_OBJECT, aabb_collision, ferris_noise, get_vertex_u32, place_block,
+        ray_cast, terrain_noise, tree_noise, vec3_to_index,
     },
 };
 
@@ -209,7 +209,7 @@ fn setup(
                 1.0 + terrain_noise(Vec2::ZERO, saved_chunks.0).0 as f32,
                 0.0,
             ),
-            Aabb::from_min_max(vec3(-0.5, 0.0, -0.5), vec3(0.5, 1.8, 0.5)),
+            Aabb::from_min_max(vec3(-0.25, 0.0, -0.25), vec3(0.25, 1.8, 0.25)),
             Player,
             Velocity::default(),
             Visibility::Visible,
@@ -488,6 +488,15 @@ fn update(
                 } else if local_pos.z >= CHUNK_SIZE {
                     local_pos.z -= CHUNK_SIZE;
                     chunk_pos.z += 1;
+                }
+
+                if aabb_collision(
+                    player.translation,
+                    vec3(0.25, 1.8, 0.25),
+                    (chunk_pos * CHUNK_SIZE + local_pos).as_vec3(),
+                    Vec3::ONE,
+                ) {
+                    return;
                 }
 
                 if let Some(chunk) = write_guard.get_mut(&chunk_pos) {

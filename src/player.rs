@@ -171,7 +171,18 @@ pub fn player_movement(
         }
     } else if grounded {
         if jump {
-            velocity.0.y = settings.jump_force;
+            if let Some(hit) = ray_cast(
+                &game_info,
+                transform.translation + Vec3::Y * 1.8,
+                Vec3::Y,
+                1.0,
+            ) {
+                if hit.distance < 0.1 {
+                    velocity.0.y = settings.jump_force;
+                }
+            } else {
+                velocity.0.y = settings.jump_force;
+            }
         } else {
             velocity.0.y = 0.0;
         }
