@@ -34,7 +34,8 @@ use iyes_perf_ui::{
 
 use crate::{
     mesher::{
-        Chunk, ChunkEntity, ChunkMesh, GameEntity, GameEntityKind, SavedWorld, build_chunk_mesh,
+        Chunk, ChunkEntity, ChunkMesh, GameEntity, GameEntityKind, SavedChunk, SavedWorld,
+        build_chunk_mesh,
     },
     utils::{
         Block, BlockKind, TREE_OBJECT, ferris_noise, get_vertex_u32, place_block, ray_cast,
@@ -117,6 +118,9 @@ pub struct GameSettings {
     pub chunk_spawn_pf: i32,
     pub mesh_update_pf: i32,
     pub despawn_chunks: bool,
+    pub debug_menus: bool,
+    pub hitboxes: bool,
+    pub chunk_borders: bool,
 }
 
 pub const CHUNK_SIZE: i32 = 16; // MAX 63
@@ -154,6 +158,12 @@ fn setup(
         chunk_spawn_pf: 50,
         mesh_update_pf: 10,
         despawn_chunks: true,
+        #[cfg(debug_assertions)]
+        debug_menus: true,
+        #[cfg(not(debug_assertions))]
+        debug_menus: false,
+        hitboxes: false,
+        chunk_borders: false,
     });
 
     commands.spawn((
@@ -200,24 +210,17 @@ fn update(
     mut game_info: ResMut<GameInfo>,
     mut perf_ui: Query<&mut Visibility, With<PerfUiEntryFPS>>,
     mut coords_text: Single<&mut TextSpan, With<CoordsText>>,
-    mut chunk_borders: Local<bool>,
-    mut hitboxes: Local<bool>,
-    mut debug_menus: Local<Option<bool>>,
     mut persistent_saved_chunks: ResMut<Persistent<SavedWorld>>,
     mut primary_window: Single<&mut Window, With<PrimaryWindow>>,
     mut mouse_scroll: EventReader<MouseWheel>,
-    // moved to tuple because of too many argmunets
-    (saved_chunks, game_entities): (ResMut<SavedWorld>, Query<(Entity, &GameEntity)>),
+    mut game_settings: ResMut<GameSettings>,
+    saved_chunks: ResMut<SavedWorld>,
+    game_entities: Query<(Entity, &GameEntity)>,
     chunks: Query<(Entity, &Transform), With<ChunkEntity>>,
     camera: Single<&Transform, With<Camera3d>>,
     mouse: Res<ButtonInput<MouseButton>>,
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
-    #[cfg(debug_assertions)]
-    let debug_menus = debug_menus.get_or_insert(true);
-    #[cfg(not(debug_assertions))]
-    let debug_menus = debug_menus.get_or_insert(false);
-
     for button in keyboard.get_just_pressed() {
         match button {
             KeyCode::F1 => {
@@ -229,14 +232,14 @@ fn update(
                     .unwrap();
             }
             KeyCode::F3 => {
-                *debug_menus = !*debug_menus;
+                game_settings.debug_menus = !game_settings.debug_menus;
             }
             // f3 + h is hard to press on a 60% keyboard so f4 it is
             KeyCode::F4 => {
-                *hitboxes = !*hitboxes;
+                game_settings.hitboxes = !game_settings.hitboxes;
             }
             KeyCode::F6 => {
-                *chunk_borders = !*chunk_borders;
+                game_settings.chunk_borders = !game_settings.chunk_borders;
             }
             KeyCode::F11 => {
                 primary_window.mode = if primary_window.mode == WindowMode::Windowed {
@@ -300,14 +303,14 @@ fn update(
     );
 
     for mut visibility in perf_ui.iter_mut() {
-        *visibility = if *debug_menus {
+        *visibility = if game_settings.debug_menus {
             Visibility::Visible
         } else {
             Visibility::Hidden
         }
     }
 
-    if *hitboxes {
+    if game_settings.hitboxes {
         for (_, entity) in game_entities.iter() {
             let mut scale = vec3(1.0, 1.0, 1.0);
             if entity.kind == GameEntityKind::Ferris {
@@ -316,49 +319,57 @@ fn update(
             gizmos.cuboid(
                 Transform::from_translation(entity.pos + scale / 2.0)
                     .with_scale(scale)
-                    .with_rotation(entity.rot),
+                    .with_rotation(Quat::from_rotation_y(entity.rot)),
                 Color::srgb(1.0, 1.0, 1.0),
             );
         }
     }
 
-    if *chunk_borders {
+    if game_settings.chunk_borders {
         let player = camera.translation.floor();
         let chunk_size = CHUNK_SIZE as f32;
+        let mut chunk_size_vec = vec2(chunk_size, chunk_size);
         let chunk_pos = vec3(
             player.x.div_euclid(chunk_size) * chunk_size + chunk_size / 2.0,
             CHUNK_HEIGHT as f32 / 2.0,
             player.z.div_euclid(chunk_size) * chunk_size + chunk_size / 2.0,
         );
-        for y in (0..CHUNK_HEIGHT).step_by(16) {
+        for y in (0..CHUNK_HEIGHT).step_by(CHUNK_SIZE as usize) {
+            if y == CHUNK_HEIGHT - CHUNK_SIZE {
+                chunk_size_vec.y -= 1.0;
+            }
             gizmos.rect(
                 Isometry3d::from_translation(
-                    chunk_pos.with_y(y as f32) + Vec3::Z * chunk_size / 2.0,
+                    chunk_pos.with_y(y as f32 + chunk_size_vec.y / 2.0)
+                        + Vec3::Z * chunk_size_vec.x / 2.0,
                 ),
-                vec2(chunk_size, chunk_size),
+                chunk_size_vec,
                 Color::srgb(0.0, 1.0, 0.0),
             );
             gizmos.rect(
                 Isometry3d::from_translation(
-                    chunk_pos.with_y(y as f32) - Vec3::Z * chunk_size / 2.0,
+                    chunk_pos.with_y(y as f32 + chunk_size_vec.y / 2.0)
+                        - Vec3::Z * chunk_size_vec.x / 2.0,
                 ),
-                vec2(chunk_size, chunk_size),
+                chunk_size_vec,
                 Color::srgb(0.0, 1.0, 0.0),
             );
             gizmos.rect(
                 Isometry3d::new(
-                    chunk_pos.with_y(y as f32) + Vec3::X * chunk_size / 2.0,
+                    chunk_pos.with_y(y as f32 + chunk_size_vec.y / 2.0)
+                        + Vec3::X * chunk_size_vec.x / 2.0,
                     Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
                 ),
-                vec2(chunk_size, chunk_size),
+                chunk_size_vec,
                 Color::srgb(0.0, 1.0, 0.0),
             );
             gizmos.rect(
                 Isometry3d::new(
-                    chunk_pos.with_y(y as f32) - Vec3::X * chunk_size / 2.0,
+                    chunk_pos.with_y(y as f32 + chunk_size_vec.y / 2.0)
+                        - Vec3::X * chunk_size_vec.x / 2.0,
                     Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
                 ),
-                vec2(chunk_size, chunk_size),
+                chunk_size_vec,
                 Color::srgb(0.0, 1.0, 0.0),
             );
         }
@@ -501,9 +512,7 @@ fn handle_chunk_gen(
                                     GameEntity {
                                         kind: GameEntityKind::Ferris,
                                         pos: vec3(pos.x, y as f32, pos.y),
-                                        rot: Quat::from_rotation_y(
-                                            rand::random_range(0..360) as f32
-                                        ),
+                                        rot: rand::random_range(0..360) as f32,
                                     },
                                 ));
                             }
@@ -656,6 +665,7 @@ fn process_tasks(
     mut spawn_tasks: Query<(Entity, &mut ComputeChunk)>,
     mut game_info: ResMut<GameInfo>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut saved_chunks: ResMut<SavedWorld>,
     game_settings: Res<GameSettings>,
 ) {
     // SPAWNING CHUNKS
@@ -666,6 +676,18 @@ fn process_tasks(
             break;
         }
         if let Some((mut chunk, pos)) = future::block_on(future::poll_once(&mut compute_task.0)) {
+            if let Some(saved_chunk) = saved_chunks.1.get_mut(&pos) {
+                saved_chunk.entities = chunk.entities.clone();
+            } else {
+                saved_chunks.1.insert(
+                    pos,
+                    SavedChunk {
+                        pos,
+                        entities: chunk.entities.clone(),
+                        ..default()
+                    },
+                );
+            }
             for (entity, game_entity) in chunk.entities.iter_mut() {
                 *entity = commands
                     .spawn((
@@ -673,7 +695,7 @@ fn process_tasks(
                         SceneRoot(game_info.models[game_entity.kind as usize].clone()),
                         Transform::from_translation(game_entity.pos + vec3(0.5, 0.0, 0.5))
                             .with_scale(Vec3::splat(2.0))
-                            .with_rotation(game_entity.rot),
+                            .with_rotation(Quat::from_rotation_y(game_entity.rot)),
                     ))
                     .id();
             }

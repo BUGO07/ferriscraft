@@ -30,7 +30,7 @@ pub enum GameEntityKind {
 pub struct GameEntity {
     pub kind: GameEntityKind,
     pub pos: Vec3,
-    pub rot: Quat,
+    pub rot: f32,
 }
 
 #[derive(Clone)]
@@ -44,7 +44,7 @@ pub struct Chunk {
 pub struct SavedWorld(pub u32, pub HashMap<IVec3, SavedChunk>);
 
 // TODO save to disk
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 pub struct SavedChunk {
     pub pos: IVec3,
     pub entities: Vec<(Entity, GameEntity)>,
