@@ -11,6 +11,7 @@ use bevy::{
         EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin,
         SystemInformationDiagnosticsPlugin,
     },
+    input::mouse::MouseWheel,
     prelude::*,
     render::{
         diagnostic::RenderDiagnosticsPlugin,
@@ -81,7 +82,7 @@ fn main() {
                 .path(Path::new("saves").join("saved_chunks.ron"))
                 .default(SavedWorld::default())
                 .build()
-                .expect("failed to initialize key bindings"),
+                .unwrap(),
         )
         .add_systems(Startup, setup)
         .add_systems(
@@ -203,9 +204,10 @@ fn update(
     mut hitboxes: Local<bool>,
     mut debug_menus: Local<Option<bool>>,
     mut persistent_saved_chunks: ResMut<Persistent<SavedWorld>>,
-    saved_chunks: ResMut<SavedWorld>,
-    primary_window: Single<&mut Window, With<PrimaryWindow>>,
-    game_entities: Query<(Entity, &GameEntity)>,
+    mut primary_window: Single<&mut Window, With<PrimaryWindow>>,
+    mut mouse_scroll: EventReader<MouseWheel>,
+    // moved to tuple because of too many argmunets
+    (saved_chunks, game_entities): (ResMut<SavedWorld>, Query<(Entity, &GameEntity)>),
     chunks: Query<(Entity, &Transform), With<ChunkEntity>>,
     camera: Single<&Transform, With<Camera3d>>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -216,39 +218,65 @@ fn update(
     #[cfg(not(debug_assertions))]
     let debug_menus = debug_menus.get_or_insert(false);
 
-    if keyboard.just_pressed(KeyCode::F1) {
-        persistent_saved_chunks
-            .update(|sc| {
-                sc.0 = saved_chunks.0;
-                sc.1 = saved_chunks.1.clone()
-            })
-            .unwrap();
+    for button in keyboard.get_just_pressed() {
+        match button {
+            KeyCode::F1 => {
+                persistent_saved_chunks
+                    .update(|sc| {
+                        sc.0 = saved_chunks.0;
+                        sc.1 = saved_chunks.1.clone()
+                    })
+                    .unwrap();
+            }
+            KeyCode::F3 => {
+                *debug_menus = !*debug_menus;
+            }
+            // f3 + h is hard to press on a 60% keyboard so f4 it is
+            KeyCode::F4 => {
+                *hitboxes = !*hitboxes;
+            }
+            KeyCode::F6 => {
+                *chunk_borders = !*chunk_borders;
+            }
+            KeyCode::F11 => {
+                primary_window.mode = if primary_window.mode == WindowMode::Windowed {
+                    WindowMode::BorderlessFullscreen(MonitorSelection::Current)
+                } else {
+                    WindowMode::Windowed
+                }
+            }
+            KeyCode::Digit1 => game_info.current_block = Block::STONE,
+            KeyCode::Digit2 => game_info.current_block = Block::DIRT,
+            KeyCode::Digit3 => game_info.current_block = Block::GRASS,
+            KeyCode::Digit4 => game_info.current_block = Block::PLANK,
+            KeyCode::Digit5 => game_info.current_block = Block::BEDROCK,
+            KeyCode::Digit6 => game_info.current_block = Block::SAND,
+            KeyCode::Digit7 => game_info.current_block = Block::WOOD,
+            KeyCode::Digit8 => game_info.current_block = Block::LEAF,
+            KeyCode::Digit9 => game_info.current_block = Block::SNOW,
+            _ => {}
+        }
     }
 
-    if keyboard.just_pressed(KeyCode::F3) {
-        *debug_menus = !*debug_menus;
-    }
-
-    // f3 + h is hard to press on a 60% keyboard so f4 it is
-    if keyboard.just_pressed(KeyCode::F4) {
-        *hitboxes = !*hitboxes;
-    }
-
-    if keyboard.just_pressed(KeyCode::F6) {
-        *chunk_borders = !*chunk_borders;
-    }
-
-    if keyboard.just_pressed(KeyCode::F11) {
-        primary_window.into_inner().mode = if primary_window.mode == WindowMode::Windowed {
-            WindowMode::BorderlessFullscreen(MonitorSelection::Current)
-        } else {
-            WindowMode::Windowed
+    for ev in mouse_scroll.read() {
+        let dir = ev.y.signum();
+        let mut next = game_info.current_block.kind as i32 + dir as i32;
+        if next == BlockKind::Water as i32 {
+            next += dir as i32;
+        }
+        if next < 1 {
+            next = 10;
+        } else if next > 10 {
+            next = 1;
+        }
+        game_info.current_block = Block {
+            kind: BlockKind::from_u32(next as u32),
         }
     }
 
     let (_, biome) = terrain_noise(camera.translation.xz(), game_info.seed);
     coords_text.0 = format!(
-        "Coord: {:.02}\nBlock: {}\nChunk: {}\nBiome: {}",
+        "Coord: {:.02}\nBlock: {}\nChunk: {}\nBiome: {}\nIn Hand: {:?}",
         camera.translation,
         vec3(
             camera.translation.x.rem_euclid(CHUNK_SIZE as f32),
@@ -267,29 +295,9 @@ fn update(
             "Mountains"
         } else {
             "Plains"
-        }
+        },
+        game_info.current_block.kind
     );
-
-    // yeah idc
-    if keyboard.just_pressed(KeyCode::Digit1) {
-        game_info.current_block = Block::STONE;
-    } else if keyboard.just_pressed(KeyCode::Digit2) {
-        game_info.current_block = Block::DIRT;
-    } else if keyboard.just_pressed(KeyCode::Digit3) {
-        game_info.current_block = Block::GRASS;
-    } else if keyboard.just_pressed(KeyCode::Digit4) {
-        game_info.current_block = Block::PLANK;
-    } else if keyboard.just_pressed(KeyCode::Digit5) {
-        game_info.current_block = Block::BEDROCK;
-    } else if keyboard.just_pressed(KeyCode::Digit6) {
-        game_info.current_block = Block::SAND;
-    } else if keyboard.just_pressed(KeyCode::Digit7) {
-        game_info.current_block = Block::WOOD;
-    } else if keyboard.just_pressed(KeyCode::Digit8) {
-        game_info.current_block = Block::LEAF;
-    } else if keyboard.just_pressed(KeyCode::Digit9) {
-        game_info.current_block = Block::SNOW;
-    }
 
     for mut visibility in perf_ui.iter_mut() {
         *visibility = if *debug_menus {
