@@ -40,124 +40,128 @@ pub struct Velocity(pub Vec3);
 
 pub fn player_movement(
     player: Single<(&mut Transform, &mut Velocity), (With<Player>, Without<PlayerCamera>)>,
-    game_info: ResMut<GameInfo>,
     camera: Single<&Transform, (With<PlayerCamera>, Without<Player>)>,
     keyboard: Res<ButtonInput<KeyCode>>,
     settings: Res<GameSettings>,
+    game_info: Res<GameInfo>,
     time: Res<Time>,
 ) {
     let (mut transform, mut velocity) = player.into_inner();
 
-    let mut dir = Vec3::ZERO;
-    let mut jump = false;
-    let mut sprint = 1.0;
+    let delta = time.delta_secs();
+
+    let mut move_dir = Vec3::ZERO;
+    let mut sprint_multiplier = 1.0;
 
     let local_z = camera.local_z();
 
     let forward = -Vec3::new(local_z.x, 0., local_z.z).normalize_or_zero();
     let right = Vec3::new(local_z.z, 0., -local_z.x).normalize_or_zero();
 
+    let should_jump = keyboard.pressed(KeyCode::Space);
+    let sneaking = keyboard.pressed(KeyCode::ShiftLeft);
+
     if keyboard.pressed(KeyCode::KeyW) {
-        dir += forward;
+        if !sneaking && keyboard.pressed(KeyCode::ControlLeft) {
+            sprint_multiplier = 1.6;
+        }
+        move_dir += forward;
     }
     if keyboard.pressed(KeyCode::KeyS) {
-        dir -= forward;
+        move_dir -= forward;
     }
     if keyboard.pressed(KeyCode::KeyA) {
-        dir -= right;
+        move_dir -= right;
     }
     if keyboard.pressed(KeyCode::KeyD) {
-        dir += right;
-    }
-    if keyboard.pressed(KeyCode::Space) {
-        jump = true;
-    }
-    if keyboard.pressed(KeyCode::ControlLeft) {
-        sprint = 1.6;
+        move_dir += right;
     }
 
-    let move_direction = dir.normalize_or_zero();
+    move_dir = move_dir.normalize_or_zero();
 
-    let mut target_velocity_x = move_direction.x * settings.movement_speed * sprint;
-    let mut target_velocity_z = move_direction.z * settings.movement_speed * sprint;
+    let mut target_velocity = vec3(
+        move_dir.x * settings.movement_speed * sprint_multiplier,
+        0.0,
+        move_dir.z * settings.movement_speed * sprint_multiplier,
+    );
 
-    let collision_points_offsets = &[
+    let movement_collision_offsets = &[
         vec3(0.25, 0.0, 0.25),
         vec3(-0.25, 0.0, 0.25),
         vec3(0.25, 0.0, -0.25),
         vec3(-0.25, 0.0, -0.25),
+        vec3(0.25, 1.0, 0.25),
+        vec3(-0.25, 1.0, 0.25),
+        vec3(0.25, 1.0, -0.25),
+        vec3(-0.25, 1.0, -0.25),
         vec3(0.0, 0.0, 0.0),
+        vec3(0.0, 1.0, 0.0),
     ];
 
-    if target_velocity_x.abs() != 0.0 {
-        let intended_move_x = Vec3::new(target_velocity_x * time.delta_secs(), 0.0, 0.0);
+    if target_velocity.x != 0.0 {
+        let intended_move_x = Vec3::new(target_velocity.x * delta, 0.0, 0.0);
         let collision_ray_direction_x = intended_move_x.normalize_or_zero();
         let ray_check_distance_x = intended_move_x.length() + 0.05;
 
-        let mut x_collision = false;
-        for pos_offset in collision_points_offsets {
+        for pos_offset in movement_collision_offsets {
             let ray_origin_for_collision = transform.translation + *pos_offset + Vec3::Y * 0.01;
             if let Some(hit) = ray_cast(
                 &game_info,
                 ray_origin_for_collision,
                 collision_ray_direction_x,
                 ray_check_distance_x,
-            ) && hit.distance < ray_check_distance_x
-                && hit.normal.as_vec3().dot(collision_ray_direction_x) < -0.1
+            ) && hit.normal.as_vec3().dot(collision_ray_direction_x) < -0.1
             {
-                x_collision = true;
+                target_velocity.x = 0.0;
                 break;
             }
         }
-        if x_collision {
-            target_velocity_x = 0.0;
-        }
     }
 
-    if target_velocity_z.abs() != 0.0 {
-        let intended_move_z = Vec3::new(0.0, 0.0, target_velocity_z * time.delta_secs());
+    if target_velocity.z != 0.0 {
+        let intended_move_z = Vec3::new(0.0, 0.0, target_velocity.z * delta);
         let collision_ray_direction_z = intended_move_z.normalize_or_zero();
         let ray_check_distance_z = intended_move_z.length() + 0.05;
 
-        let mut z_collision = false;
-        for pos_offset in collision_points_offsets {
+        for pos_offset in movement_collision_offsets {
             let ray_origin_for_collision = transform.translation + *pos_offset + Vec3::Y * 0.01;
             if let Some(hit) = ray_cast(
                 &game_info,
                 ray_origin_for_collision,
                 collision_ray_direction_z,
                 ray_check_distance_z,
-            ) && hit.distance < ray_check_distance_z
-                && hit.normal.as_vec3().dot(collision_ray_direction_z) < -0.1
+            ) && hit.normal.as_vec3().dot(collision_ray_direction_z) < -0.1
             {
-                z_collision = true;
+                target_velocity.z = 0.0;
                 break;
             }
         }
-        if z_collision {
-            target_velocity_z = 0.0;
+    }
+
+    if sneaking {
+        target_velocity *= 0.5;
+        if ray_cast(&game_info, transform.translation, -Vec3::Y, 0.2).is_none() {
+            // TODO
         }
     }
 
-    velocity.0.x = target_velocity_x;
-    velocity.0.z = target_velocity_z;
-
-    let ray_origin = transform.translation + Vec3::Y * 0.1;
-    let ray_direction = Vec3::new(0.0, -1.0, 0.0);
+    velocity.0.x = target_velocity.x;
+    velocity.0.z = target_velocity.z;
 
     let mut grounded = false;
     let mut closest_ground_distance = f32::MAX;
 
-    for pos_offset in &[
-        vec3(0.25, 0.0, -0.25),
-        vec3(0.25, 0.0, 0.25),
-        vec3(-0.25, 0.0, -0.25),
-        vec3(-0.25, 0.0, 0.25),
-    ] {
-        if let Some(hit) = ray_cast(&game_info, ray_origin + pos_offset, ray_direction, 1.0) {
-            if hit.distance < 0.1 {
-                grounded = true;
-            }
+    let grounded_collision_offsets = &[
+        vec3(0.25, 0.1, 0.25),
+        vec3(-0.25, 0.1, 0.25),
+        vec3(0.25, 0.1, -0.25),
+        vec3(-0.25, 0.1, -0.25),
+        vec3(0.0, 0.1, 0.0),
+    ];
+
+    for offset in grounded_collision_offsets {
+        if let Some(hit) = ray_cast(&game_info, transform.translation + offset, -Vec3::Y, 0.2) {
+            grounded = true;
 
             if hit.distance < closest_ground_distance {
                 closest_ground_distance = hit.distance;
@@ -165,21 +169,25 @@ pub fn player_movement(
         }
     }
 
-    if !game_info.loaded {
-        if transform.translation.y < 0.1 {
-            transform.translation.y = 0.0;
-        }
-    } else if grounded {
-        if jump {
-            if let Some(hit) = ray_cast(
-                &game_info,
-                transform.translation + Vec3::Y * 1.8,
-                Vec3::Y,
-                1.0,
-            ) {
-                if hit.distance < 0.1 {
-                    velocity.0.y = settings.jump_force;
+    if grounded {
+        if should_jump {
+            let mut hit = false;
+
+            for offset in grounded_collision_offsets {
+                if ray_cast(
+                    &game_info,
+                    transform.translation + Vec3::Y * 1.8 + offset,
+                    Vec3::Y,
+                    0.3,
+                )
+                .is_some()
+                {
+                    hit = true;
+                    break;
                 }
+            }
+            if hit {
+                velocity.0.y = settings.jump_force / 4.0;
             } else {
                 velocity.0.y = settings.jump_force;
             }
@@ -188,19 +196,19 @@ pub fn player_movement(
         }
 
         if velocity.0.y <= 0.0 && closest_ground_distance > 0.0 && closest_ground_distance < 0.1 {
-            transform.translation.y = ray_origin.y - closest_ground_distance;
+            transform.translation.y -= closest_ground_distance - 0.1;
         }
     } else {
-        velocity.0.y -= settings.gravity * time.delta_secs();
+        velocity.0.y -= settings.gravity * delta;
     }
 
-    transform.translation += velocity.0 * time.delta_secs();
+    transform.translation += velocity.0 * delta;
 }
 
 pub fn toggle_grab_cursor(window: &mut Window) {
     match window.cursor_options.grab_mode {
         CursorGrabMode::None => {
-            window.cursor_options.grab_mode = CursorGrabMode::Confined;
+            window.cursor_options.grab_mode = CursorGrabMode::Locked;
             window.cursor_options.visible = false;
         }
         _ => {

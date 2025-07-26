@@ -259,16 +259,16 @@ pub fn place_block(
         old_save.blocks.insert(pos, block);
     }
     if pos.x == 0 {
-        update_chunk(commands, chunks, chunk_pos - ivec3(1, 0, 0));
+        update_chunk(commands, chunks, chunk_pos - IVec3::X);
     }
     if pos.x == CHUNK_SIZE - 1 {
-        update_chunk(commands, chunks, chunk_pos + ivec3(1, 0, 0));
+        update_chunk(commands, chunks, chunk_pos + IVec3::X);
     }
     if pos.z == 0 {
-        update_chunk(commands, chunks, chunk_pos - ivec3(0, 0, 1));
+        update_chunk(commands, chunks, chunk_pos - IVec3::Z);
     }
     if pos.z == CHUNK_SIZE - 1 {
-        update_chunk(commands, chunks, chunk_pos + ivec3(0, 0, 1));
+        update_chunk(commands, chunks, chunk_pos + IVec3::Z);
     }
     update_chunk(commands, chunks, chunk_pos);
 }
@@ -278,7 +278,8 @@ pub struct RayHit {
     pub global_position: IVec3,
     pub chunk_pos: IVec3,
     pub local_pos: IVec3,
-    pub normal: IVec3,
+    pub normal: Direction,
+    pub block: Block,
     pub distance: f32,
 }
 
@@ -347,17 +348,33 @@ pub fn ray_cast(
             current_block_pos.x += step_x as f32;
             current_distance = t_max_x;
             t_max_x += t_delta_x;
-            normal = IVec3::new(-step_x, 0, 0);
+            normal = if step_x > 0 {
+                Direction::Left
+            } else {
+                Direction::Right
+            };
         } else if t_max_y < t_max_z {
             current_block_pos.y += step_y as f32;
             current_distance = t_max_y;
             t_max_y += t_delta_y;
-            normal = IVec3::new(0, -step_y, 0);
+            normal = if step_y > 0 {
+                Direction::Bottom
+            } else {
+                Direction::Top
+            };
         } else {
             current_block_pos.z += step_z as f32;
             current_distance = t_max_z;
             t_max_z += t_delta_z;
-            normal = IVec3::new(0, 0, -step_z);
+            normal = if step_z > 0 {
+                Direction::Back
+            } else {
+                Direction::Front
+            };
+        }
+
+        if current_distance > max_distance {
+            break;
         }
 
         let chunk_pos = ivec3(
@@ -379,7 +396,7 @@ pub fn ray_cast(
             let block_index = vec3_to_index(local_block_pos);
 
             if block_index < chunk.blocks.len() && (0..CHUNK_HEIGHT).contains(&local_block_pos.y) {
-                let block = &chunk.blocks[block_index];
+                let block = chunk.blocks[block_index];
 
                 if block.kind.is_solid() {
                     return Some(RayHit {
@@ -387,6 +404,7 @@ pub fn ray_cast(
                         chunk_pos,
                         local_pos: local_block_pos,
                         normal,
+                        block,
                         distance: current_distance,
                     });
                 }
@@ -397,52 +415,62 @@ pub fn ray_cast(
     None
 }
 
-#[derive(
-    Component, Clone, Copy, Default, Debug, PartialEq, Eq, Reflect, Serialize, Deserialize,
-)]
+#[derive(Component, Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Block {
     pub kind: BlockKind,
+    pub direction: Direction,
 }
 
 impl Block {
     pub const DEFAULT: Self = Self::AIR;
     pub const AIR: Self = Self {
         kind: BlockKind::Air,
+        direction: Direction::Top,
     };
     pub const STONE: Self = Self {
         kind: BlockKind::Stone,
+        ..Self::DEFAULT
     };
     pub const DIRT: Self = Self {
         kind: BlockKind::Dirt,
+        ..Self::DEFAULT
     };
     pub const GRASS: Self = Self {
         kind: BlockKind::Grass,
+        ..Self::DEFAULT
     };
     pub const PLANK: Self = Self {
         kind: BlockKind::Plank,
+        ..Self::DEFAULT
     };
     pub const BEDROCK: Self = Self {
         kind: BlockKind::Bedrock,
+        ..Self::DEFAULT
     };
     pub const WATER: Self = Self {
         kind: BlockKind::Water,
+        ..Self::DEFAULT
     };
     pub const SAND: Self = Self {
         kind: BlockKind::Sand,
+        ..Self::DEFAULT
     };
     pub const WOOD: Self = Self {
         kind: BlockKind::Wood,
+        ..Self::DEFAULT
     };
     pub const LEAF: Self = Self {
         kind: BlockKind::Leaf,
+        ..Self::DEFAULT
     };
     pub const SNOW: Self = Self {
         kind: BlockKind::Snow,
+        ..Self::DEFAULT
     };
 }
 
 #[repr(u32)]
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, Reflect, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, Serialize, Deserialize)]
 pub enum BlockKind {
     #[default]
     Air,
@@ -465,6 +493,13 @@ impl BlockKind {
 
     pub fn is_air(self) -> bool {
         self == BlockKind::Air
+    }
+
+    pub fn can_rotate(self) -> bool {
+        match self {
+            BlockKind::Wood => true,
+            _ => false,
+        }
     }
 
     pub fn from_u32(value: u32) -> BlockKind {
@@ -502,14 +537,15 @@ impl BlockKind {
 // }
 
 #[repr(u32)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, Serialize, Deserialize)]
 pub enum Direction {
-    West,
-    East,
+    Left,
+    Right,
     Bottom,
+    #[default]
     Top,
-    South,
-    North,
+    Back,
+    Front,
 }
 
 impl Direction {
@@ -522,22 +558,127 @@ impl Direction {
         [0.0, 0.0, 1.0],  // North
     ];
 
+    #[inline]
     pub fn get_normal(self) -> u32 {
         self as u32
     }
 
+    #[inline]
     pub fn get_normal3d(self) -> [f32; 3] {
         Self::NORMALS[self.get_normal() as usize]
     }
 
+    #[inline]
+    pub fn as_vec3(self) -> Vec3 {
+        Vec3::from_array(self.get_normal3d())
+    }
+
+    #[inline]
     pub fn get_opposite(self) -> Self {
         match self {
-            Direction::West => Direction::East,
-            Direction::East => Direction::West,
+            Direction::Left => Direction::Right,
+            Direction::Right => Direction::Left,
             Direction::Bottom => Direction::Top,
             Direction::Top => Direction::Bottom,
-            Direction::South => Direction::North,
-            Direction::North => Direction::South,
+            Direction::Back => Direction::Front,
+            Direction::Front => Direction::Back,
+        }
+    }
+
+    #[inline]
+    // bad code final boss
+    // i don't know how to deal with the dark magic of rust macros so this is what is gonna be
+    pub fn get_uvs(self, block: Block) -> [[f32; 2]; 4] {
+        let face_idx = match block.direction {
+            Direction::Top => match self {
+                Direction::Top => 0.0,
+                Direction::Bottom => 2.0,
+                _ => 1.0,
+            },
+            Direction::Bottom => match self {
+                Direction::Top => 2.0,
+                Direction::Bottom => 0.0,
+                _ => 1.0,
+            },
+            Direction::Right => match self {
+                Direction::Right => 0.0,
+                Direction::Left => 2.0,
+                _ => 1.0,
+            },
+            Direction::Left => match self {
+                Direction::Right => 2.0,
+                Direction::Left => 0.0,
+                _ => 1.0,
+            },
+            Direction::Front => match self {
+                Direction::Front => 0.0,
+                Direction::Back => 2.0,
+                _ => 1.0,
+            },
+            Direction::Back => match self {
+                Direction::Front => 2.0,
+                Direction::Back => 0.0,
+                _ => 1.0,
+            },
+        };
+
+        const ATLAS_SIZE_X: f32 = 3.0;
+        const ATLAS_SIZE_Y: f32 = 10.0;
+
+        let pos = vec2(
+            face_idx / ATLAS_SIZE_X,
+            (block.kind as u32 - 1) as f32 / ATLAS_SIZE_Y,
+        );
+
+        let top_left = [pos.x, pos.y];
+        let top_right = [pos.x + 1.0 / ATLAS_SIZE_X, pos.y];
+        let bottom_right = [pos.x + 1.0 / ATLAS_SIZE_X, pos.y + 1.0 / ATLAS_SIZE_Y];
+        let bottom_left = [pos.x, pos.y + 1.0 / ATLAS_SIZE_Y];
+
+        // HOLY OVERENGINEERED BAD CODE
+        match block.direction {
+            Direction::Top => match self {
+                Direction::Front | Direction::Back => {
+                    [bottom_left, top_left, top_right, bottom_right]
+                }
+                Direction::Left => [bottom_right, bottom_left, top_left, top_right],
+                _ => [top_left, top_right, bottom_right, bottom_left],
+            },
+            Direction::Bottom => match self {
+                Direction::Front | Direction::Back => {
+                    [top_right, bottom_right, bottom_left, top_left]
+                }
+                Direction::Left => [top_left, top_right, bottom_right, bottom_left],
+                _ => [bottom_right, bottom_left, top_left, top_right],
+            },
+            Direction::Right => match self {
+                Direction::Top | Direction::Bottom => {
+                    [bottom_left, top_left, top_right, bottom_right]
+                }
+                Direction::Back => [bottom_right, bottom_left, top_left, top_right],
+                _ => [top_left, top_right, bottom_right, bottom_left],
+            },
+            Direction::Left => match self {
+                Direction::Top | Direction::Bottom => {
+                    [top_right, bottom_right, bottom_left, top_left]
+                }
+                Direction::Back => [top_left, top_right, bottom_right, bottom_left],
+                _ => [bottom_right, bottom_left, top_left, top_right],
+            },
+            Direction::Front => match self {
+                Direction::Right | Direction::Left => {
+                    [bottom_left, top_left, top_right, bottom_right]
+                }
+                Direction::Bottom => [bottom_right, bottom_left, top_left, top_right],
+                _ => [top_left, top_right, bottom_right, bottom_left],
+            },
+            Direction::Back => match self {
+                Direction::Right | Direction::Left => {
+                    [top_right, bottom_right, bottom_left, top_left]
+                }
+                Direction::Bottom => [top_left, top_right, bottom_right, bottom_left],
+                _ => [bottom_right, bottom_left, top_left, top_right],
+            },
         }
     }
 }
@@ -552,13 +693,13 @@ impl Quad {
     // TODO make water be smaller than 1x1x1
     pub fn from_direction(direction: Direction, pos: IVec3, size: IVec3) -> Self {
         let corners = match direction {
-            Direction::West => [
+            Direction::Left => [
                 [pos.x, pos.y, pos.z],
                 [pos.x, pos.y, pos.z + size.z],
                 [pos.x, pos.y + size.y, pos.z + size.z],
                 [pos.x, pos.y + size.y, pos.z],
             ],
-            Direction::East => [
+            Direction::Right => [
                 [pos.x, pos.y + size.y, pos.z],
                 [pos.x, pos.y + size.y, pos.z + size.z],
                 [pos.x, pos.y, pos.z + size.z],
@@ -576,13 +717,13 @@ impl Quad {
                 [pos.x + size.x, pos.y, pos.z],
                 [pos.x, pos.y, pos.z],
             ],
-            Direction::South => [
+            Direction::Back => [
                 [pos.x, pos.y, pos.z],
                 [pos.x, pos.y + size.y, pos.z],
                 [pos.x + size.x, pos.y + size.y, pos.z],
                 [pos.x + size.x, pos.y, pos.z],
             ],
-            Direction::North => [
+            Direction::Front => [
                 [pos.x + size.x, pos.y, pos.z],
                 [pos.x + size.x, pos.y + size.y, pos.z],
                 [pos.x, pos.y + size.y, pos.z],

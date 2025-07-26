@@ -1,4 +1,8 @@
-#![allow(clippy::too_many_arguments, clippy::type_complexity)]
+#![allow(
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    clippy::match_like_matches_macro
+)]
 
 use std::{
     collections::{HashMap, HashSet},
@@ -22,6 +26,7 @@ use bevy::{
     tasks::{AsyncComputeTaskPool, Task, futures_lite::future},
     window::{PrimaryWindow, WindowMode},
 };
+use bevy_framepace::FramepacePlugin;
 use bevy_inspector_egui::{
     bevy_egui::EguiPlugin,
     quick::{ResourceInspectorPlugin, WorldInspectorPlugin},
@@ -71,6 +76,7 @@ fn main() {
             EntityCountDiagnosticsPlugin,
             RenderDiagnosticsPlugin,
             SystemInformationDiagnosticsPlugin,
+            FramepacePlugin,
             PerfUiPlugin,
             EguiPlugin::default(),
             WorldInspectorPlugin::default().run_if(
@@ -85,8 +91,8 @@ fn main() {
             Persistent::<SavedWorld>::builder()
                 .name("saved world")
                 .format(StorageFormat::Bincode)
-                .path(Path::new("saves").join("saved_world.ferris"))
-                .default(SavedWorld::default())
+                .path(Path::new("saves").join("world.ferris"))
+                .default(SavedWorld(rand::random(), HashMap::new()))
                 .build()
                 .unwrap(),
         )
@@ -100,16 +106,16 @@ fn main() {
             (
                 toggle_pause.run_if(input_just_pressed(KeyCode::Escape)),
                 (
-                    player_movement,
+                    player_movement.run_if(|game_info: Res<GameInfo>| game_info.loaded),
                     camera_movement,
                     update,
-                    handle_chunk_gen,
-                    handle_chunk_despawn
-                        .run_if(|game_settings: Res<GameSettings>| game_settings.despawn_chunks),
-                    process_tasks,
-                    handle_mesh_gen,
                 )
                     .in_set(PausableSystems),
+                handle_chunk_gen,
+                handle_mesh_gen,
+                handle_chunk_despawn
+                    .run_if(|game_settings: Res<GameSettings>| game_settings.despawn_chunks),
+                process_tasks,
             ),
         )
         .run();
@@ -131,7 +137,7 @@ pub struct GameInfo {
     pub materials: Vec<Handle<StandardMaterial>>,
     pub models: Vec<Handle<Scene>>,
     pub despawn_tasks: Vec<Task<Vec<(Entity, IVec3)>>>,
-    pub current_block: Block,
+    pub current_block: BlockKind,
     pub loaded: bool,
 }
 
@@ -147,6 +153,7 @@ pub struct GameSettings {
     pub jump_force: f32,
     pub despawn_chunks: bool,
     pub debug_menus: bool,
+    pub white_world: bool,
     pub hitboxes: bool,
     pub chunk_borders: bool,
     pub paused: bool,
@@ -170,17 +177,20 @@ fn setup(
     saved_chunks.0 = persistent_saved_chunks.0;
     saved_chunks.1 = persistent_saved_chunks.1.clone();
 
+    let atlas = materials.add(StandardMaterial {
+        base_color_texture: Some(asset_server.load("atlas.png")),
+        reflectance: 0.0,
+        ..default()
+    });
+
     commands.insert_resource(GameInfo {
         seed: saved_chunks.0,
         chunks: Arc::new(RwLock::new(HashMap::new())),
         loading_chunks: Arc::new(RwLock::new(HashSet::new())),
-        materials: vec![materials.add(StandardMaterial {
-            base_color_texture: Some(asset_server.load("atlas.png")),
-            ..default()
-        })],
+        materials: vec![atlas],
         models: vec![asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/ferris.glb"))],
         despawn_tasks: Vec::new(),
-        current_block: Block::STONE,
+        current_block: BlockKind::Stone,
         loaded: false,
     });
     commands.insert_resource(GameSettings {
@@ -197,6 +207,7 @@ fn setup(
         debug_menus: true,
         #[cfg(not(debug_assertions))]
         debug_menus: false,
+        white_world: false,
         hitboxes: false,
         chunk_borders: false,
         paused: false,
@@ -251,8 +262,8 @@ fn setup(
         Transform::from_rotation(Quat::from_euler(
             EulerRot::ZYX,
             0.0,
-            std::f32::consts::FRAC_PI_4,  // 45 degrees around Y
-            -std::f32::consts::FRAC_PI_3, // -60 degrees pitch (sun in sky)
+            33.5_f32.to_radians(),
+            -47.3_f32.to_radians(),
         )),
     ));
 }
@@ -295,6 +306,16 @@ fn update(
             KeyCode::F6 => {
                 game_settings.chunk_borders = !game_settings.chunk_borders;
             }
+            // the way it changes is funny asf
+            KeyCode::F7 => {
+                game_settings.white_world = !game_settings.white_world;
+                for (chunk, _) in chunks.iter() {
+                    commands
+                        .entity(chunk)
+                        .try_remove::<ChunkEntity>()
+                        .try_insert(ChunkEntity);
+                }
+            }
             KeyCode::F11 => {
                 primary_window.mode = if primary_window.mode == WindowMode::Windowed {
                     WindowMode::BorderlessFullscreen(MonitorSelection::Current)
@@ -302,15 +323,15 @@ fn update(
                     WindowMode::Windowed
                 }
             }
-            KeyCode::Digit1 => game_info.current_block = Block::STONE,
-            KeyCode::Digit2 => game_info.current_block = Block::DIRT,
-            KeyCode::Digit3 => game_info.current_block = Block::GRASS,
-            KeyCode::Digit4 => game_info.current_block = Block::PLANK,
-            KeyCode::Digit5 => game_info.current_block = Block::BEDROCK,
-            KeyCode::Digit6 => game_info.current_block = Block::SAND,
-            KeyCode::Digit7 => game_info.current_block = Block::WOOD,
-            KeyCode::Digit8 => game_info.current_block = Block::LEAF,
-            KeyCode::Digit9 => game_info.current_block = Block::SNOW,
+            KeyCode::Digit1 => game_info.current_block = BlockKind::Stone,
+            KeyCode::Digit2 => game_info.current_block = BlockKind::Dirt,
+            KeyCode::Digit3 => game_info.current_block = BlockKind::Grass,
+            KeyCode::Digit4 => game_info.current_block = BlockKind::Plank,
+            KeyCode::Digit5 => game_info.current_block = BlockKind::Bedrock,
+            KeyCode::Digit6 => game_info.current_block = BlockKind::Sand,
+            KeyCode::Digit7 => game_info.current_block = BlockKind::Wood,
+            KeyCode::Digit8 => game_info.current_block = BlockKind::Leaf,
+            KeyCode::Digit9 => game_info.current_block = BlockKind::Snow,
             _ => {}
         }
     }
@@ -328,7 +349,7 @@ fn update(
 
     for ev in mouse_scroll.read() {
         let dir = ev.y.signum();
-        let mut next = game_info.current_block.kind as i32 + dir as i32;
+        let mut next = game_info.current_block as i32 + dir as i32;
         if next == BlockKind::Water as i32 {
             next += dir as i32;
         }
@@ -337,9 +358,7 @@ fn update(
         } else if next > 10 {
             next = 1;
         }
-        game_info.current_block = Block {
-            kind: BlockKind::from_u32(next as u32),
-        }
+        game_info.current_block = BlockKind::from_u32(next as u32);
     }
 
     let (_, biome) = terrain_noise(player.translation.xz(), game_info.seed);
@@ -364,7 +383,7 @@ fn update(
         } else {
             "Plains"
         },
-        game_info.current_block.kind
+        game_info.current_block
     );
 
     for mut visibility in perf_ui.iter_mut() {
@@ -471,7 +490,7 @@ fn update(
         } else if mouse.just_pressed(MouseButton::Right) {
             let mut write_guard = game_info.chunks.write().unwrap();
 
-            local_pos += hit.normal;
+            local_pos += hit.normal.as_vec3().as_ivec3();
 
             if local_pos.y >= 0 && local_pos.y < CHUNK_HEIGHT - 1 {
                 if local_pos.x < 0 {
@@ -492,8 +511,8 @@ fn update(
 
                 if aabb_collision(
                     player.translation,
-                    vec3(0.25, 1.8, 0.25),
-                    (chunk_pos * CHUNK_SIZE + local_pos).as_vec3(),
+                    vec3(0.3, 1.8, 0.3),
+                    (hit_global_position + hit.normal.as_vec3().as_ivec3()).as_vec3(),
                     Vec3::ONE,
                 ) {
                     return;
@@ -508,7 +527,14 @@ fn update(
                             chunk_pos,
                             &chunks,
                             local_pos,
-                            game_info.current_block,
+                            Block {
+                                kind: game_info.current_block,
+                                direction: if game_info.current_block.can_rotate() {
+                                    hit.normal
+                                } else {
+                                    Default::default()
+                                },
+                            },
                         );
                     }
                 } else {
@@ -588,22 +614,20 @@ fn handle_chunk_gen(
                                     },
                                 ));
                             }
-                            chunk.blocks[vec3_to_index(ivec3(rela_x, y, rela_z))] = Block {
-                                kind: if y == 0 {
-                                    BlockKind::Bedrock
-                                } else if y < max_y {
-                                    match y {
-                                        _ if y > 165 => BlockKind::Snow,
-                                        _ if y > 140 => BlockKind::Stone,
-                                        _ if y == max_y - 1 => BlockKind::Grass,
-                                        _ if y >= max_y - 4 => BlockKind::Dirt,
-                                        _ => BlockKind::Stone,
-                                    }
-                                } else if y < SEA_LEVEL {
-                                    BlockKind::Water
-                                } else {
-                                    BlockKind::Air
-                                },
+                            chunk.blocks[vec3_to_index(ivec3(rela_x, y, rela_z))] = if y == 0 {
+                                Block::BEDROCK
+                            } else if y < max_y {
+                                match y {
+                                    _ if y > 165 => Block::SNOW,
+                                    _ if y > 140 => Block::STONE,
+                                    _ if y == max_y - 1 => Block::GRASS,
+                                    _ if y >= max_y - 4 => Block::DIRT,
+                                    _ => Block::STONE,
+                                }
+                            } else if y < SEA_LEVEL {
+                                Block::WATER
+                            } else {
+                                Block::AIR
                             };
                         }
 
@@ -818,7 +842,9 @@ fn process_tasks(
 
                 bevy_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
                 bevy_mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-                bevy_mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, mesh_data.uvs);
+                if !game_settings.white_world {
+                    bevy_mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, mesh_data.uvs);
+                }
                 bevy_mesh.insert_indices(Indices::U32(mesh_data.indices));
 
                 let mesh_handle = meshes.add(bevy_mesh);
