@@ -16,6 +16,7 @@ opt-level = 3
 bevy = { version = "0.16.1", features = ["wayland"] }
 bevy-inspector-egui = "0.32.0"
 bevy-persistent = { version = "0.8.0", features = ["bincode"] }
+bevy_framepace = "0.19.1"
 iyes_perf_ui = "0.5.0"
 noiz = "0.2.0"
 rand = "0.9.2"

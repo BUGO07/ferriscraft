@@ -6,8 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     CHUNK_HEIGHT, CHUNK_SIZE,
     utils::{
-        Block, BlockKind, Direction, Quad, generate_indices, index_to_vec3, make_vertex_u32,
-        vec3_to_index,
+        Block, Direction, Quad, generate_indices, index_to_vec3, make_vertex_u32, vec3_to_index,
     },
 };
 
@@ -26,7 +25,7 @@ pub enum GameEntityKind {
     Ferris,
 }
 
-#[derive(Component, Clone, Copy, Serialize, Deserialize)]
+#[derive(Component, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct GameEntity {
     pub kind: GameEntityKind,
     pub pos: Vec3,
@@ -43,7 +42,6 @@ pub struct Chunk {
 #[derive(Resource, Clone, Default, Serialize, Deserialize)]
 pub struct SavedWorld(pub u32, pub HashMap<IVec3, SavedChunk>);
 
-// TODO save to disk
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct SavedChunk {
     pub pos: IVec3,
@@ -51,31 +49,18 @@ pub struct SavedChunk {
     pub blocks: HashMap<IVec3, Block>, // placed/broken blocks
 }
 
-const ATLAS_SIZE: u32 = 10;
-
-fn push_face(mesh: &mut ChunkMesh, dir: Direction, vpos: IVec3, block_type: u32) {
+fn push_face(mesh: &mut ChunkMesh, dir: Direction, vpos: IVec3, block: Block) {
     let quad = Quad::from_direction(dir, vpos, IVec3::ONE);
-
-    let uv_origin = [0.0, (block_type - 1) as f32 / ATLAS_SIZE as f32];
-
-    let tile_size_y = 1.0 / ATLAS_SIZE as f32;
-
-    let uv_corners = [
-        [uv_origin[0], uv_origin[1]],
-        [uv_origin[0] + 1.0, uv_origin[1]],
-        [uv_origin[0] + 1.0, uv_origin[1] + tile_size_y],
-        [uv_origin[0], uv_origin[1] + tile_size_y],
-    ];
 
     for (i, corner) in quad.corners.into_iter().enumerate() {
         mesh.vertices.push(make_vertex_u32(
             IVec3::from_array(corner),
             0,
             dir.get_normal(),
-            block_type,
+            block.kind as u32,
         ));
 
-        mesh.uvs.push(uv_corners[i]);
+        mesh.uvs.push(dir.get_uvs(block)[i]);
     }
 }
 
@@ -87,24 +72,24 @@ pub fn build_chunk_mesh(chunks_refs: &Chunk, chunks: &HashMap<IVec3, Chunk>) -> 
         match !current.kind.is_air() {
             true => {
                 if left.kind.is_air() {
-                    push_face(&mut mesh, Direction::West, local, current.kind as u32);
+                    push_face(&mut mesh, Direction::Left, local, current);
                 }
                 if back.kind.is_air() {
-                    push_face(&mut mesh, Direction::South, local, current.kind as u32);
+                    push_face(&mut mesh, Direction::Back, local, current);
                 }
                 if down.kind.is_air() {
-                    push_face(&mut mesh, Direction::Bottom, local, current.kind as u32);
+                    push_face(&mut mesh, Direction::Bottom, local, current);
                 }
             }
             false => {
                 if !left.kind.is_air() {
-                    push_face(&mut mesh, Direction::East, local, left.kind as u32);
+                    push_face(&mut mesh, Direction::Right, local, left);
                 }
                 if !back.kind.is_air() {
-                    push_face(&mut mesh, Direction::North, local, back.kind as u32);
+                    push_face(&mut mesh, Direction::Front, local, back);
                 }
                 if !down.kind.is_air() {
-                    push_face(&mut mesh, Direction::Top, local, down.kind as u32);
+                    push_face(&mut mesh, Direction::Top, local, down);
                 }
             }
         }
@@ -130,9 +115,7 @@ impl Chunk {
         if index < self.blocks.len() {
             &self.blocks[index]
         } else {
-            &Block {
-                kind: BlockKind::Air,
-            }
+            &Block::AIR
         }
     }
 
