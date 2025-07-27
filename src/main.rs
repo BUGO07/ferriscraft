@@ -46,8 +46,8 @@ use crate::{
         Player, PlayerCamera, Velocity, camera_movement, player_movement, toggle_grab_cursor,
     },
     utils::{
-        Block, BlockKind, TREE_OBJECT, aabb_collision, ferris_noise, get_vertex_u32, place_block,
-        ray_cast, terrain_noise, tree_noise, vec3_to_index,
+        Block, BlockKind, TREE_OBJECT, aabb_collision, ferris_noise, generate_block_at,
+        get_vertex_u32, place_block, ray_cast, terrain_noise, tree_noise, vec3_to_index,
     },
 };
 
@@ -86,7 +86,6 @@ fn main() {
                 |perf_ui: Single<&Visibility, With<PerfUiEntryFPS>>| *perf_ui != Visibility::Hidden,
             ),
         ))
-        .init_resource::<SavedWorld>()
         .insert_resource(
             Persistent::<SavedWorld>::builder()
                 .name("saved world")
@@ -134,6 +133,7 @@ pub struct GameInfo {
     pub seed: u32,
     pub chunks: Arc<RwLock<HashMap<IVec3, Chunk>>>,
     pub loading_chunks: Arc<RwLock<HashSet<IVec3>>>,
+    pub saved_chunks: Arc<RwLock<HashMap<IVec3, SavedChunk>>>,
     pub materials: Vec<Handle<StandardMaterial>>,
     pub models: Vec<Handle<Scene>>,
     pub despawn_tasks: Vec<Task<Vec<(Entity, IVec3)>>>,
@@ -169,13 +169,11 @@ pub struct CoordsText;
 fn setup(
     mut commands: Commands,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut saved_chunks: ResMut<SavedWorld>,
     mut window: Single<&mut Window, With<PrimaryWindow>>,
     persistent_saved_chunks: Res<Persistent<SavedWorld>>,
     asset_server: Res<AssetServer>,
 ) {
-    saved_chunks.0 = persistent_saved_chunks.0;
-    saved_chunks.1 = persistent_saved_chunks.1.clone();
+    let seed = persistent_saved_chunks.0;
 
     let atlas = materials.add(StandardMaterial {
         base_color_texture: Some(asset_server.load("atlas.png")),
@@ -184,9 +182,10 @@ fn setup(
     });
 
     commands.insert_resource(GameInfo {
-        seed: saved_chunks.0,
+        seed,
         chunks: Arc::new(RwLock::new(HashMap::new())),
         loading_chunks: Arc::new(RwLock::new(HashSet::new())),
+        saved_chunks: Arc::new(RwLock::new(persistent_saved_chunks.1.clone())),
         materials: vec![atlas],
         models: vec![asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/ferris.glb"))],
         despawn_tasks: Vec::new(),
@@ -215,11 +214,7 @@ fn setup(
 
     let player = commands
         .spawn((
-            Transform::from_xyz(
-                0.0,
-                1.0 + terrain_noise(Vec2::ZERO, saved_chunks.0).0 as f32,
-                0.0,
-            ),
+            Transform::from_xyz(0.0, 1.0 + terrain_noise(Vec2::ZERO, seed).0 as f32, 0.0),
             Aabb::from_min_max(vec3(-0.25, 0.0, -0.25), vec3(0.25, 1.8, 0.25)),
             Player,
             Velocity::default(),
@@ -280,7 +275,6 @@ fn update(
     mut game_settings: ResMut<GameSettings>,
     mut camera: Single<(&Transform, &mut Projection), (With<PlayerCamera>, Without<Player>)>,
     player: Single<&Transform, (With<Player>, Without<PlayerCamera>)>,
-    saved_chunks: ResMut<SavedWorld>,
     game_entities: Query<(Entity, &GameEntity)>,
     chunks: Query<(Entity, &Transform), With<ChunkEntity>>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -291,8 +285,9 @@ fn update(
             KeyCode::F1 => {
                 persistent_saved_chunks
                     .update(|sc| {
-                        sc.0 = saved_chunks.0;
-                        sc.1 = saved_chunks.1.clone()
+                        let saved_chunks = game_info.saved_chunks.read().unwrap();
+                        sc.0 = game_info.seed;
+                        sc.1 = saved_chunks.clone()
                     })
                     .unwrap();
             }
@@ -479,7 +474,7 @@ fn update(
             if let Some(chunk) = write_guard.get_mut(&chunk_pos) {
                 place_block(
                     &mut commands,
-                    saved_chunks.into_inner(),
+                    &mut game_info.saved_chunks.write().unwrap(),
                     chunk,
                     chunk_pos,
                     &chunks,
@@ -522,7 +517,7 @@ fn update(
                     if chunk.blocks[vec3_to_index(local_pos)] == Block::AIR {
                         place_block(
                             &mut commands,
-                            saved_chunks.into_inner(),
+                            &mut game_info.saved_chunks.write().unwrap(),
                             chunk,
                             chunk_pos,
                             &chunks,
@@ -547,7 +542,6 @@ fn update(
 
 fn handle_chunk_gen(
     mut commands: Commands,
-    saved_chunks: Res<SavedWorld>,
     game_info: Res<GameInfo>,
     game_settings: Res<GameSettings>,
     player: Single<&Transform, With<Player>>,
@@ -562,7 +556,7 @@ fn handle_chunk_gen(
         for chunk_x in (pt.x as i32 / CHUNK_SIZE - render_distance)
             ..(pt.x as i32 / CHUNK_SIZE + render_distance)
         {
-            let current_chunk_key = ivec3(chunk_x, 0, chunk_z);
+            let pos = ivec3(chunk_x, 0, chunk_z);
 
             let Ok(chunks_guard) = game_info.chunks.read() else {
                 continue;
@@ -571,35 +565,32 @@ fn handle_chunk_gen(
                 continue;
             };
 
-            if chunks_guard.contains_key(&current_chunk_key)
-                || loading_chunks_guard.contains(&current_chunk_key)
-            {
+            if chunks_guard.contains_key(&pos) || loading_chunks_guard.contains(&pos) {
                 continue;
             }
             drop(chunks_guard);
             drop(loading_chunks_guard);
 
-            game_info
-                .loading_chunks
-                .write()
-                .unwrap()
-                .insert(current_chunk_key);
+            game_info.loading_chunks.write().unwrap().insert(pos);
 
             let seed = game_info.seed;
-            let chunks_for_task = game_info.chunks.clone();
-            let saved_chunks = saved_chunks.clone();
+            let chunks = game_info.chunks.clone();
+            let saved_chunks = game_info.saved_chunks.clone();
             let task = thread_pool.spawn(async move {
-                let mut chunk = Chunk::new(current_chunk_key);
+                let mut chunk = Chunk::new(pos);
 
                 for rela_z in 0..CHUNK_SIZE {
                     for rela_x in 0..CHUNK_SIZE {
                         let pos = vec2(
-                            (rela_x + chunk_x * CHUNK_SIZE) as f32,
-                            (rela_z + chunk_z * CHUNK_SIZE) as f32,
+                            (rela_x + pos.x * CHUNK_SIZE) as f32,
+                            (rela_z + pos.z * CHUNK_SIZE) as f32,
                         );
                         let (max_y, biome) = terrain_noise(pos, seed);
 
                         for y in 0..CHUNK_HEIGHT {
+                            chunk.blocks[vec3_to_index(ivec3(rela_x, y, rela_z))] =
+                                generate_block_at(ivec3(pos.x as i32, y, pos.y as i32), seed);
+
                             if y == max_y
                                 && max_y > SEA_LEVEL
                                 && biome < 0.4
@@ -614,21 +605,21 @@ fn handle_chunk_gen(
                                     },
                                 ));
                             }
-                            chunk.blocks[vec3_to_index(ivec3(rela_x, y, rela_z))] = if y == 0 {
-                                Block::BEDROCK
-                            } else if y < max_y {
-                                match y {
-                                    _ if y > 165 => Block::SNOW,
-                                    _ if y > 140 => Block::STONE,
-                                    _ if y == max_y - 1 => Block::GRASS,
-                                    _ if y >= max_y - 4 => Block::DIRT,
-                                    _ => Block::STONE,
-                                }
-                            } else if y < SEA_LEVEL {
-                                Block::WATER
-                            } else {
-                                Block::AIR
-                            };
+                            // chunk.blocks[vec3_to_index(ivec3(rela_x, y, rela_z))] = if y == 0 {
+                            //     Block::BEDROCK
+                            // } else if y < max_y {
+                            //     match y {
+                            //         _ if y > 165 => Block::SNOW,
+                            //         _ if y > 140 => Block::STONE,
+                            //         _ if y == max_y - 1 => Block::GRASS,
+                            //         _ if y >= max_y - 4 => Block::DIRT,
+                            //         _ => Block::STONE,
+                            //     }
+                            // } else if y < SEA_LEVEL {
+                            //     Block::WATER
+                            // } else {
+                            //     Block::AIR
+                            // };
                         }
 
                         let tree_probabilty = tree_noise(pos, seed);
@@ -652,10 +643,8 @@ fn handle_chunk_gen(
                                             chunk.blocks[vec3_to_index(pos)] = *block;
                                         } else if let Some(relative_chunk_key) =
                                             chunk.get_relative_chunk(pos)
-                                            && let Some(target_chunk) = chunks_for_task
-                                                .write()
-                                                .unwrap()
-                                                .get_mut(&relative_chunk_key)
+                                            && let Some(target_chunk) =
+                                                chunks.write().unwrap().get_mut(&relative_chunk_key)
                                         {
                                             let block_index = vec3_to_index(
                                                 pos - relative_chunk_key * CHUNK_SIZE,
@@ -671,14 +660,13 @@ fn handle_chunk_gen(
                     }
                 }
 
-                if let Some(saved_chunk) = saved_chunks.1.get(&current_chunk_key) {
+                if let Some(saved_chunk) = saved_chunks.read().unwrap().get(&pos) {
                     for (pos, block) in &saved_chunk.blocks {
                         chunk.blocks[vec3_to_index(*pos)] = *block;
                     }
                     chunk.entities = saved_chunk.entities.clone();
                 }
-
-                (chunk, current_chunk_key)
+                (chunk, pos)
             });
             commands.spawn(ComputeChunk(task));
         }
@@ -696,6 +684,7 @@ fn handle_mesh_gen(
         let chunk_coords = chunk_transform.translation.as_ivec3() / CHUNK_SIZE;
 
         let chunks_for_task = game_info.chunks.clone();
+        let seed = game_info.seed;
 
         let task = thread_pool.spawn(async move {
             let chunks_map_guard = chunks_for_task.read().unwrap();
@@ -703,7 +692,7 @@ fn handle_mesh_gen(
             let chunk_data_option = chunks_map_guard.get(&chunk_coords);
 
             if let Some(chunk_data) = chunk_data_option {
-                build_chunk_mesh(chunk_data, &chunks_map_guard)
+                build_chunk_mesh(chunk_data, &chunks_map_guard, seed)
             } else {
                 None
             }
@@ -761,7 +750,6 @@ fn process_tasks(
     mut spawn_tasks: Query<(Entity, &mut ComputeChunk)>,
     mut game_info: ResMut<GameInfo>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut saved_chunks: ResMut<SavedWorld>,
     game_settings: Res<GameSettings>,
 ) {
     // SPAWNING CHUNKS
@@ -772,10 +760,11 @@ fn process_tasks(
             break;
         }
         if let Some((mut chunk, pos)) = future::block_on(future::poll_once(&mut compute_task.0)) {
-            if let Some(saved_chunk) = saved_chunks.1.get_mut(&pos) {
+            let mut write_guard = game_info.saved_chunks.write().unwrap();
+            if let Some(saved_chunk) = write_guard.get_mut(&pos) {
                 saved_chunk.entities = chunk.entities.clone();
             } else {
-                saved_chunks.1.insert(
+                write_guard.insert(
                     pos,
                     SavedChunk {
                         pos,
@@ -784,6 +773,7 @@ fn process_tasks(
                     },
                 );
             }
+            drop(write_guard);
             for (entity, game_entity) in chunk.entities.iter_mut() {
                 *entity = commands
                     .spawn((
