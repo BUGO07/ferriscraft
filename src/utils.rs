@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     CHUNK_HEIGHT, CHUNK_SIZE, GameInfo, SEA_LEVEL,
-    mesher::{Chunk, ChunkEntity, SavedChunk, SavedWorld},
+    mesher::{Chunk, ChunkEntity, SavedChunk},
 };
 
 #[inline]
@@ -240,7 +240,7 @@ pub fn update_chunk(
 // very shitty way but it works
 pub fn place_block(
     commands: &mut Commands,
-    saved_chunks: &mut SavedWorld,
+    saved_chunks: &mut HashMap<IVec3, SavedChunk>,
     chunk: &mut Chunk,
     chunk_pos: IVec3,
     chunks: &Query<(Entity, &Transform), With<ChunkEntity>>,
@@ -248,14 +248,14 @@ pub fn place_block(
     block: Block,
 ) {
     chunk.blocks[vec3_to_index(pos)] = block;
-    if let Entry::Vacant(e) = saved_chunks.1.entry(chunk_pos) {
+    if let Entry::Vacant(e) = saved_chunks.entry(chunk_pos) {
         e.insert(SavedChunk {
             pos: chunk_pos,
             blocks: HashMap::from([(pos, block)]),
             entities: chunk.entities.clone(),
         });
     } else {
-        let old_save = saved_chunks.1.get_mut(&chunk_pos).unwrap();
+        let old_save = saved_chunks.get_mut(&chunk_pos).unwrap();
         old_save.blocks.insert(pos, block);
     }
     if pos.x == 0 {
@@ -681,6 +681,49 @@ impl Direction {
             },
         }
     }
+}
+
+#[inline]
+pub fn generate_block_at(pos: IVec3, seed: u32) -> Block {
+    let (max_y, _) = terrain_noise(pos.xz().as_vec2(), seed);
+
+    let y = pos.y;
+    if y == 0 {
+        Block::BEDROCK
+    } else if y < max_y {
+        match y {
+            _ if y > 165 => Block::SNOW,
+            _ if y > 140 => Block::STONE,
+            _ if y == max_y - 1 => Block::GRASS,
+            _ if y >= max_y - 4 => Block::DIRT,
+            _ => Block::STONE,
+        }
+    } else if y < SEA_LEVEL {
+        Block::WATER
+    } else {
+        Block::AIR
+    }
+
+    // let tree_probabilty = tree_noise(pos.xz().as_vec2(), seed);
+
+    // if tree_probabilty > 0.85 && max_y < 90 && max_y > SEA_LEVEL + 2 {
+    //     for (y, tree_layer) in TREE_OBJECT.iter().enumerate() {
+    //         for (z, tree_row) in tree_layer.iter().enumerate() {
+    //             for (x, block) in tree_row.iter().enumerate() {
+    //                 let mut tree_pos = ivec3(3 + x as i32, y as i32, 3 + z as i32);
+    //                 let (local_max_y, _) = terrain_noise((pos + tree_pos).as_vec3().xz(), seed);
+
+    //                 tree_pos.y += local_max_y;
+
+    //                 if pos == tree_pos {
+    //                     return *block;
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
+
+    // terrain_block
 }
 
 pub struct Quad {

@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     CHUNK_HEIGHT, CHUNK_SIZE,
     utils::{
-        Block, Direction, Quad, generate_indices, index_to_vec3, make_vertex_u32, vec3_to_index,
+        Block, Direction, Quad, generate_block_at, generate_indices, index_to_vec3,
+        make_vertex_u32, vec3_to_index,
     },
 };
 
@@ -64,11 +65,15 @@ fn push_face(mesh: &mut ChunkMesh, dir: Direction, vpos: IVec3, block: Block) {
     }
 }
 
-pub fn build_chunk_mesh(chunks_refs: &Chunk, chunks: &HashMap<IVec3, Chunk>) -> Option<ChunkMesh> {
+pub fn build_chunk_mesh(
+    chunks_refs: &Chunk,
+    chunks: &HashMap<IVec3, Chunk>,
+    seed: u32,
+) -> Option<ChunkMesh> {
     let mut mesh = ChunkMesh::default();
     for i in 0..CHUNK_SIZE * CHUNK_HEIGHT * CHUNK_SIZE {
         let local = index_to_vec3(i as usize);
-        let (current, back, left, down) = chunks_refs.get_adjacent_blocks(local, chunks);
+        let (current, back, left, down) = chunks_refs.get_adjacent_blocks(local, chunks, seed);
         match !current.kind.is_air() {
             true => {
                 if left.kind.is_air() {
@@ -147,17 +152,18 @@ impl Chunk {
         &self,
         pos: IVec3,
         chunks: &HashMap<IVec3, Chunk>,
+        seed: u32,
         // current, back, left, down
     ) -> (Block, Block, Block, Block) {
         let current = self.get_block(pos);
 
-        let get_block = |pos: IVec3| -> Option<Block> {
+        let get_block = |pos: IVec3| -> Block {
             let mut x = pos.x;
             let y = pos.y;
             let mut z = pos.z;
 
             if !(0..CHUNK_HEIGHT).contains(&y) {
-                return None;
+                return Block::AIR;
             }
 
             let mut chunk_pos = self.pos;
@@ -178,13 +184,16 @@ impl Chunk {
                 chunk_pos.z += 1;
             }
 
-            let chunk = chunks.get(&chunk_pos)?;
-            chunk.blocks.get(vec3_to_index(ivec3(x, y, z))).copied()
+            if let Some(chunk) = chunks.get(&chunk_pos) {
+                chunk.blocks[vec3_to_index(ivec3(x, y, z))]
+            } else {
+                generate_block_at(chunk_pos * CHUNK_SIZE + ivec3(x, y, z), seed)
+            }
         };
 
-        let back = get_block(pos + ivec3(0, 0, -1)).unwrap_or_default();
-        let left = get_block(pos + ivec3(-1, 0, 0)).unwrap_or_default();
-        let down = get_block(pos + ivec3(0, -1, 0)).unwrap_or_default();
+        let back = get_block(pos + ivec3(0, 0, -1));
+        let left = get_block(pos + ivec3(-1, 0, 0));
+        let down = get_block(pos + ivec3(0, -1, 0));
         (*current, back, left, down)
     }
 }
