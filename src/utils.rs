@@ -503,7 +503,7 @@ impl BlockKind {
     }
 }
 
-#[repr(u32)]
+#[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug, Serialize, Deserialize)]
 pub enum Direction {
     Left,
