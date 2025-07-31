@@ -81,7 +81,7 @@ pub struct GameEntity {
     pub rot: f32,
 }
 
-#[repr(u32)]
+#[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug, Serialize, Deserialize)]
 pub enum BlockKind {
     #[default]
@@ -98,7 +98,7 @@ pub enum BlockKind {
     Snow,
 }
 
-#[repr(u32)]
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GameEntityKind {
     Ferris,
