@@ -15,18 +15,15 @@ use crate::{
 pub struct ChunkMesh {
     pub indices: Vec<u32>,
     pub vertices: Vec<u32>,
-    pub uvs: Vec<[f32; 2]>,
+    pub uvs: Vec<Vec2>,
 }
 
 fn push_face(mesh: &mut ChunkMesh, dir: Direction, vpos: IVec3, block: Block) {
     let quad = Quad::from_direction(dir, vpos, IVec3::ONE);
 
     for (i, corner) in quad.corners.into_iter().enumerate() {
-        mesh.vertices.push(make_vertex_u32(
-            IVec3::from_array(corner),
-            dir as u32,
-            block.kind as u32,
-        ));
+        mesh.vertices
+            .push(make_vertex_u32(IVec3::from_array(corner), dir, block.kind));
 
         mesh.uvs.push(dir.get_uvs(block)[i]);
     }

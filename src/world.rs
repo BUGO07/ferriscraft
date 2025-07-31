@@ -105,10 +105,10 @@ pub enum GameEntityKind {
 }
 
 #[derive(Component)]
-struct ComputeChunk(Task<(Chunk, IVec3)>);
+struct ComputeChunk(Task<(Chunk, IVec3)>, u32);
 
 #[derive(Component)]
-struct ComputeChunkMesh(Task<Option<ChunkMesh>>);
+struct ComputeChunkMesh(Task<Option<ChunkMesh>>, u32);
 
 fn handle_chunk_gen(
     mut commands: Commands,
@@ -223,13 +223,17 @@ fn handle_chunk_gen(
                 }
                 (chunk, pos)
             });
-            commands.spawn(ComputeChunk(task));
+            commands.spawn(ComputeChunk(
+                task,
+                pos.distance_squared(pt.as_ivec3().with_y(0) / CHUNK_SIZE) as u32,
+            ));
         }
     }
 }
 
 fn handle_mesh_gen(
     mut commands: Commands,
+    player: Single<&Transform, With<Player>>,
     game_info: Res<GameInfo>,
     chunks_query: Query<(Entity, &Transform), Added<ChunkMarker>>,
 ) {
@@ -253,7 +257,12 @@ fn handle_mesh_gen(
             }
         });
 
-        commands.entity(entity).try_insert(ComputeChunkMesh(task));
+        commands.entity(entity).try_insert(ComputeChunkMesh(
+            task,
+            (chunk_transform.translation.as_ivec3() / CHUNK_SIZE)
+                .distance_squared(player.translation.as_ivec3().with_y(0) / CHUNK_SIZE)
+                as u32,
+        ));
     }
 }
 
@@ -310,7 +319,11 @@ fn process_tasks(
 ) {
     // SPAWNING CHUNKS
     let mut processed_this_frame = 0;
-    for (entity, mut compute_task) in spawn_tasks.iter_mut() {
+    let mut tasks = spawn_tasks.iter_mut().collect::<Vec<_>>();
+
+    tasks.sort_by(|(_, first), (_, second)| first.1.cmp(&second.1)); // should matter but i dont think it does.
+
+    for (entity, mut compute_task) in tasks {
         if processed_this_frame >= 15 {
             break;
         }
@@ -365,7 +378,9 @@ fn process_tasks(
     // GENERATING MESHES
     let mut processed_this_frame = 0;
 
-    for (entity, mut compute_task) in mesh_tasks.iter_mut() {
+    let mut tasks = mesh_tasks.iter_mut().collect::<Vec<_>>();
+    tasks.sort_by(|(_, first), (_, second)| first.1.cmp(&second.1));
+    for (entity, mut compute_task) in tasks {
         if processed_this_frame >= 15 {
             break;
         }

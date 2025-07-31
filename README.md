@@ -1,42 +1,55 @@
 # FerrisCraft - Blazingly fast voxel game made in pure rust
 
-## Star this or both sides of your pillow will be warm everyday for the rest of your life :]
+### Star this or both sides of your pillow will be warm everyday for the rest of your life :]
 
-### Features
-- blazingly fast procedural terrain generation (shit)
-- culled mesher
-- decent terrain (trees, mountains, water, etc...)
-- first person character controller
-- place/break blocks
-- save game
-- little ferris entities
-- what more do you want bro
+## Features
 
-### Screenshots
+- Blazingly Fast Culled Mesher
+- Procedural Terrain Generation (With Biomes)
+- First Person Character Controller
+- Place/Break Blocks
+- Save/Restore World
+- Ferris Entities/Mobs
+- What More Do You Want?
+
+## Screenshots
+
 ![screenshot_1](/screenshots/screenshot_1.png)
 -
 ![screenshot_2](/screenshots/screenshot_2.png)
 -
 ![screenshot_3](/screenshots/screenshot_3.png)
 
-### Controls
+## Controls
+
 `WASD/Space` - movement\
 `LControl` - sprint
 `LMB/RMB` - place/break blocks\
 `1-9/ScrollWheel+-` - switch blocks\
 `C` - zoom\
 `f1` save game\
+`f2` screenshot\
 `f3` debug menus\
 `f4` toggle hitboxes\
 `f6` chunk borders\
 `f7` super secret settings\
 `f11` toggle fullscreen
 
+## TODO
 
-### TODO
 - greedy meshing or something
 - better ferris spawning
 - make it into minecraft
 
-### Credits
+## Building And Running
+
+Make sure you have the latest version of nightly [rust](https://rustup.rs/).
+
+1. Clone the repo with:\
+`git clone --depth=1 https://github.com/BUGO07/ferriscraft`
+
+2. Go to the root directory of the cloned repo and run `cargo run`
+
+## Credits
+
 [Ferris 3D Model](https://sketchfab.com/3d-models/ferris-the-crab-e9bc16e19d1c4880b30d2aa5fd174887) - [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
