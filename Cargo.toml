@@ -13,7 +13,7 @@ opt-level = 1
 opt-level = 3
 
 [dependencies]
-bevy = { version = "0.16.1", features = ["wayland"] }
+bevy = { version = "0.16.1", features = ["dynamic_linking", "file_watcher", "wayland"] }
 bevy-inspector-egui = "0.32.0"
 bevy-persistent = { version = "0.8.0", features = ["bincode"] }
 bevy_framepace = "0.19.1"

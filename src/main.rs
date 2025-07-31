@@ -16,15 +16,17 @@ use bevy::{
         EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin,
         SystemInformationDiagnosticsPlugin,
     },
+    image::{ImageFilterMode, ImageSamplerDescriptor},
     input::{common_conditions::input_just_pressed, mouse::MouseWheel},
     prelude::*,
     render::{
         diagnostic::RenderDiagnosticsPlugin,
         mesh::{Indices, PrimitiveTopology},
         primitives::Aabb,
+        render_resource::{AsBindGroup, ShaderRef},
     },
     tasks::{AsyncComputeTaskPool, Task, futures_lite::future},
-    window::{PrimaryWindow, WindowMode},
+    window::{PresentMode, PrimaryWindow, WindowMode},
 };
 use bevy_framepace::FramepacePlugin;
 use bevy_inspector_egui::{
@@ -45,6 +47,7 @@ use crate::{
     player::{
         Player, PlayerCamera, Velocity, camera_movement, player_movement, toggle_grab_cursor,
     },
+    post::{PostProcessPlugin, PostProcessSettings},
     utils::{
         Block, BlockKind, TREE_OBJECT, aabb_collision, ferris_noise, generate_block_at,
         get_vertex_u32, place_block, ray_cast, terrain_noise, tree_noise, vec3_to_index,
@@ -53,6 +56,7 @@ use crate::{
 
 pub mod mesher;
 pub mod player;
+pub mod post;
 pub mod utils;
 
 #[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone)]
@@ -66,12 +70,25 @@ fn main() {
                     primary_window: Some(Window {
                         title: "FerrisCraft".to_string(),
                         mode: WindowMode::Windowed,
-                        present_mode: bevy::window::PresentMode::AutoNoVsync,
+                        present_mode: PresentMode::AutoNoVsync,
                         ..default()
                     }),
                     ..default()
                 })
-                .set(ImagePlugin::default_nearest()), // for low res textures
+                .set(ImagePlugin {
+                    default_sampler: ImageSamplerDescriptor {
+                        min_filter: ImageFilterMode::Nearest,
+                        mag_filter: ImageFilterMode::Nearest,
+                        mipmap_filter: ImageFilterMode::Nearest,
+                        ..default()
+                    },
+                })
+                .set(AssetPlugin {
+                    watch_for_changes_override: Some(true),
+                    ..default()
+                }), // for low res textures
+            PostProcessPlugin,
+            MaterialPlugin::<VoxelMaterial>::default(),
             FrameTimeDiagnosticsPlugin::default(),
             EntityCountDiagnosticsPlugin,
             RenderDiagnosticsPlugin,
@@ -134,7 +151,8 @@ pub struct GameInfo {
     pub chunks: Arc<RwLock<HashMap<IVec3, Chunk>>>,
     pub loading_chunks: Arc<RwLock<HashSet<IVec3>>>,
     pub saved_chunks: Arc<RwLock<HashMap<IVec3, SavedChunk>>>,
-    pub materials: Vec<Handle<StandardMaterial>>,
+    pub assets: Vec<Handle<Image>>,
+    pub materials: Vec<Handle<VoxelMaterial>>,
     pub models: Vec<Handle<Scene>>,
     pub despawn_tasks: Vec<Task<Vec<(Entity, IVec3)>>>,
     pub current_block: BlockKind,
@@ -153,7 +171,6 @@ pub struct GameSettings {
     pub jump_force: f32,
     pub despawn_chunks: bool,
     pub debug_menus: bool,
-    pub white_world: bool,
     pub hitboxes: bool,
     pub chunk_borders: bool,
     pub paused: bool,
@@ -166,27 +183,39 @@ pub const SEA_LEVEL: i32 = 64; // MAX CHUNK_HEIGHT - 180
 #[derive(Component)]
 pub struct CoordsText;
 
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+pub struct VoxelMaterial {
+    #[texture(1)]
+    #[sampler(2)]
+    pub color_texture: Option<Handle<Image>>,
+}
+
+impl Material for VoxelMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/voxel.wgsl".into()
+    }
+}
+
 fn setup(
     mut commands: Commands,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<VoxelMaterial>>,
     mut window: Single<&mut Window, With<PrimaryWindow>>,
     persistent_saved_chunks: Res<Persistent<SavedWorld>>,
     asset_server: Res<AssetServer>,
 ) {
     let seed = persistent_saved_chunks.0;
 
-    let atlas = materials.add(StandardMaterial {
-        base_color_texture: Some(asset_server.load("atlas.png")),
-        reflectance: 0.0,
-        ..default()
-    });
+    let atlas = asset_server.load("atlas.ktx2");
 
     commands.insert_resource(GameInfo {
         seed,
         chunks: Arc::new(RwLock::new(HashMap::new())),
         loading_chunks: Arc::new(RwLock::new(HashSet::new())),
         saved_chunks: Arc::new(RwLock::new(persistent_saved_chunks.1.clone())),
-        materials: vec![atlas],
+        assets: vec![atlas.clone()],
+        materials: vec![materials.add(VoxelMaterial {
+            color_texture: Some(atlas),
+        })],
         models: vec![asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/ferris.glb"))],
         despawn_tasks: Vec::new(),
         current_block: BlockKind::Stone,
@@ -206,7 +235,6 @@ fn setup(
         debug_menus: true,
         #[cfg(not(debug_assertions))]
         debug_menus: false,
-        white_world: false,
         hitboxes: false,
         chunk_borders: false,
         paused: false,
@@ -225,6 +253,9 @@ fn setup(
     commands.spawn((
         Camera3d::default(),
         PlayerCamera,
+        PostProcessSettings::default(),
+        // Msaa::Sample8,
+        // Fxaa::default(),
         Transform::from_xyz(0.0, 1.62, -0.05).looking_at(Vec3::ZERO, Vec3::Y), // minecraft way
         ChildOf(player),
     ));
@@ -273,8 +304,8 @@ fn update(
     mut primary_window: Single<&mut Window, With<PrimaryWindow>>,
     mut mouse_scroll: EventReader<MouseWheel>,
     mut game_settings: ResMut<GameSettings>,
-    mut camera: Single<(&Transform, &mut Projection), (With<PlayerCamera>, Without<Player>)>,
-    player: Single<&Transform, (With<Player>, Without<PlayerCamera>)>,
+    mut camera: Single<(&Transform, &mut Projection, &mut PostProcessSettings)>,
+    player: Single<&Transform, With<Player>>,
     game_entities: Query<(Entity, &GameEntity)>,
     chunks: Query<(Entity, &Transform), With<ChunkEntity>>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -301,15 +332,21 @@ fn update(
             KeyCode::F6 => {
                 game_settings.chunk_borders = !game_settings.chunk_borders;
             }
-            // the way it changes is funny asf
             KeyCode::F7 => {
-                game_settings.white_world = !game_settings.white_world;
-                for (chunk, _) in chunks.iter() {
-                    commands
-                        .entity(chunk)
-                        .try_remove::<ChunkEntity>()
-                        .try_insert(ChunkEntity);
+                camera.2.sss += 1;
+                if camera.2.sss > 8 {
+                    camera.2.sss = 0;
                 }
+
+                // for (chunk, _) in chunks.iter() {
+                //     commands
+                //         .entity(chunk)
+                //         .try_remove::<MeshMaterial3d<VoxelMaterial>>()
+                //         .try_insert(MeshMaterial3d(
+                //             game_info.materials[game_settings.super_secret_settings as usize]
+                //                 .clone(),
+                //         ));
+                // }
             }
             KeyCode::F11 => {
                 primary_window.mode = if primary_window.mode == WindowMode::Windowed {
@@ -476,7 +513,6 @@ fn update(
                     &mut commands,
                     &mut game_info.saved_chunks.write().unwrap(),
                     chunk,
-                    chunk_pos,
                     &chunks,
                     local_pos,
                     Block::AIR,
@@ -506,8 +542,8 @@ fn update(
 
                 if aabb_collision(
                     player.translation,
-                    vec3(0.3, 1.8, 0.3),
-                    (hit_global_position + hit.normal.as_vec3().as_ivec3()).as_vec3(),
+                    vec3(0.25, 1.8, 0.25),
+                    hit_global_position.as_vec3() + hit.normal.as_vec3(),
                     Vec3::ONE,
                 ) {
                     return;
@@ -519,7 +555,6 @@ fn update(
                             &mut commands,
                             &mut game_info.saved_chunks.write().unwrap(),
                             chunk,
-                            chunk_pos,
                             &chunks,
                             local_pos,
                             Block {
@@ -762,7 +797,9 @@ fn process_tasks(
         if let Some((mut chunk, pos)) = future::block_on(future::poll_once(&mut compute_task.0)) {
             let mut write_guard = game_info.saved_chunks.write().unwrap();
             if let Some(saved_chunk) = write_guard.get_mut(&pos) {
-                saved_chunk.entities = chunk.entities.clone();
+                if saved_chunk.entities != chunk.entities {
+                    saved_chunk.entities = chunk.entities.clone();
+                }
             } else {
                 write_guard.insert(
                     pos,
@@ -774,8 +811,8 @@ fn process_tasks(
                 );
             }
             drop(write_guard);
-            for (entity, game_entity) in chunk.entities.iter_mut() {
-                *entity = commands
+            for (e, game_entity) in chunk.entities.iter_mut() {
+                *e = commands
                     .spawn((
                         *game_entity,
                         SceneRoot(game_info.models[game_entity.kind as usize].clone()),
@@ -832,9 +869,7 @@ fn process_tasks(
 
                 bevy_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
                 bevy_mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-                if !game_settings.white_world {
-                    bevy_mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, mesh_data.uvs);
-                }
+                bevy_mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, mesh_data.uvs);
                 bevy_mesh.insert_indices(Indices::U32(mesh_data.indices));
 
                 let mesh_handle = meshes.add(bevy_mesh);
