@@ -11,7 +11,6 @@ use std::{
 };
 
 use bevy::{
-    asset::RenderAssetUsages,
     diagnostic::{
         EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin,
         SystemInformationDiagnosticsPlugin,
@@ -21,11 +20,9 @@ use bevy::{
     prelude::*,
     render::{
         diagnostic::RenderDiagnosticsPlugin,
-        mesh::{Indices, PrimitiveTopology},
         primitives::Aabb,
-        render_resource::{AsBindGroup, ShaderRef},
+        view::screenshot::{Screenshot, save_to_disk},
     },
-    tasks::{AsyncComputeTaskPool, Task, futures_lite::future},
     window::{PresentMode, PrimaryWindow, WindowMode},
 };
 use bevy_framepace::FramepacePlugin;
@@ -33,34 +30,32 @@ use bevy_inspector_egui::{
     bevy_egui::EguiPlugin,
     quick::{ResourceInspectorPlugin, WorldInspectorPlugin},
 };
-use bevy_persistent::{Persistent, StorageFormat};
+use bevy_persistent::Persistent;
 use iyes_perf_ui::{
     PerfUiPlugin,
     prelude::{PerfUiAllEntries, PerfUiEntryFPS},
 };
 
 use crate::{
-    mesher::{
-        Chunk, ChunkEntity, ChunkMesh, GameEntity, GameEntityKind, SavedChunk, SavedWorld,
-        build_chunk_mesh,
-    },
-    player::{
-        Player, PlayerCamera, Velocity, camera_movement, player_movement, toggle_grab_cursor,
-    },
-    post::{PostProcessPlugin, PostProcessSettings},
+    player::{Player, PlayerCamera, PlayerPlugin, Velocity},
+    render_pipeline::{PostProcessSettings, RenderPipelinePlugin, VoxelMaterial},
     utils::{
-        Block, BlockKind, TREE_OBJECT, aabb_collision, ferris_noise, generate_block_at,
-        get_vertex_u32, place_block, ray_cast, terrain_noise, tree_noise, vec3_to_index,
+        aabb_collision, place_block, ray_cast, terrain_noise, toggle_grab_cursor, vec3_to_index,
+    },
+    world::{
+        Block, BlockKind, Chunk, ChunkMarker, GameEntity, GameEntityKind, SavedChunk, SavedWorld,
+        WorldPlugin,
     },
 };
 
-pub mod mesher;
-pub mod player;
-pub mod post;
-pub mod utils;
+mod mesher;
+mod player;
+mod render_pipeline;
+mod utils;
+mod world;
 
 #[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone)]
-pub struct PausableSystems;
+struct PausableSystems;
 
 fn main() {
     App::new()
@@ -76,6 +71,7 @@ fn main() {
                     ..default()
                 })
                 .set(ImagePlugin {
+                    // for low res textures
                     default_sampler: ImageSamplerDescriptor {
                         min_filter: ImageFilterMode::Nearest,
                         mag_filter: ImageFilterMode::Nearest,
@@ -84,11 +80,10 @@ fn main() {
                     },
                 })
                 .set(AssetPlugin {
+                    // for messing with shaders without restarting the game
                     watch_for_changes_override: Some(true),
                     ..default()
-                }), // for low res textures
-            PostProcessPlugin,
-            MaterialPlugin::<VoxelMaterial>::default(),
+                }),
             FrameTimeDiagnosticsPlugin::default(),
             EntityCountDiagnosticsPlugin,
             RenderDiagnosticsPlugin,
@@ -103,142 +98,113 @@ fn main() {
                 |perf_ui: Single<&Visibility, With<PerfUiEntryFPS>>| *perf_ui != Visibility::Hidden,
             ),
         ))
-        .insert_resource(
-            Persistent::<SavedWorld>::builder()
-                .name("saved world")
-                .format(StorageFormat::Bincode)
-                .path(Path::new("saves").join("world.ferris"))
-                .default(SavedWorld(rand::random(), HashMap::new()))
-                .build()
-                .unwrap(),
-        )
+        .add_plugins((WorldPlugin, PlayerPlugin, RenderPipelinePlugin))
+        .init_resource::<GameInfo>()
+        .insert_resource(GameSettings {
+            movement_speed: 3.0,
+            sensitivity: 1.2,
+            fov: 60,
+            render_distance: 16,
+            gravity: 23.31,
+            jump_force: 7.7,
+            despawn_chunks: true,
+            #[cfg(debug_assertions)]
+            debug_menus: true,
+            #[cfg(not(debug_assertions))]
+            debug_menus: false,
+            hitboxes: false,
+            chunk_borders: false,
+            paused: false,
+        })
         .configure_sets(
             Update,
             PausableSystems.run_if(|settings: Res<GameSettings>| !settings.paused),
         )
         .add_systems(Startup, setup)
+        .add_systems(Update, update.in_set(PausableSystems))
+        // toggle pause
         .add_systems(
             Update,
-            (
-                toggle_pause.run_if(input_just_pressed(KeyCode::Escape)),
-                (
-                    player_movement.run_if(|game_info: Res<GameInfo>| game_info.loaded),
-                    camera_movement,
-                    update,
-                )
-                    .in_set(PausableSystems),
-                handle_chunk_gen,
-                handle_mesh_gen,
-                handle_chunk_despawn
-                    .run_if(|game_settings: Res<GameSettings>| game_settings.despawn_chunks),
-                process_tasks,
-            ),
+            (|mut game_settings: ResMut<GameSettings>,
+              mut window: Single<&mut Window, With<PrimaryWindow>>| {
+                game_settings.paused = !game_settings.paused;
+                toggle_grab_cursor(&mut window);
+            })
+            .run_if(input_just_pressed(KeyCode::Escape)),
         )
         .run();
 }
 
-fn toggle_pause(
-    mut game_settings: ResMut<GameSettings>,
-    mut window: Single<&mut Window, With<PrimaryWindow>>,
-) {
-    game_settings.paused = !game_settings.paused;
-    toggle_grab_cursor(&mut window);
-}
+const CHUNK_SIZE: i32 = 16; // MAX 63
+const CHUNK_HEIGHT: i32 = 256; // MAX 511
+const SEA_LEVEL: i32 = 64; // MAX CHUNK_HEIGHT - 180
 
-#[derive(Resource)]
-pub struct GameInfo {
-    pub seed: u32,
-    pub chunks: Arc<RwLock<HashMap<IVec3, Chunk>>>,
-    pub loading_chunks: Arc<RwLock<HashSet<IVec3>>>,
-    pub saved_chunks: Arc<RwLock<HashMap<IVec3, SavedChunk>>>,
-    pub assets: Vec<Handle<Image>>,
-    pub materials: Vec<Handle<VoxelMaterial>>,
-    pub models: Vec<Handle<Scene>>,
-    pub despawn_tasks: Vec<Task<Vec<(Entity, IVec3)>>>,
-    pub current_block: BlockKind,
-    pub loaded: bool,
+#[derive(Resource, Default)]
+struct GameInfo {
+    seed: u32,
+    chunks: Arc<RwLock<HashMap<IVec3, Chunk>>>,
+    loading_chunks: Arc<RwLock<HashSet<IVec3>>>,
+    saved_chunks: Arc<RwLock<HashMap<IVec3, SavedChunk>>>,
+    materials: Vec<Handle<VoxelMaterial>>,
+    models: Vec<Handle<Scene>>,
+    current_block: BlockKind,
 }
 
 #[derive(Reflect, Resource, Default)]
-pub struct GameSettings {
-    pub movement_speed: f32,
-    pub sensitivity: f32,
-    pub render_distance: i32,
-    pub chunk_spawn_pf: i32,
-    pub mesh_update_pf: i32,
-    pub fov: u32,
-    pub gravity: f32,
-    pub jump_force: f32,
-    pub despawn_chunks: bool,
-    pub debug_menus: bool,
-    pub hitboxes: bool,
-    pub chunk_borders: bool,
-    pub paused: bool,
+struct GameSettings {
+    movement_speed: f32,
+    sensitivity: f32,
+    render_distance: i32,
+    fov: u32,
+    gravity: f32,
+    jump_force: f32,
+    despawn_chunks: bool,
+    debug_menus: bool,
+    hitboxes: bool,
+    chunk_borders: bool,
+    paused: bool,
 }
-
-pub const CHUNK_SIZE: i32 = 16; // MAX 63
-pub const CHUNK_HEIGHT: i32 = 256; // MAX 511
-pub const SEA_LEVEL: i32 = 64; // MAX CHUNK_HEIGHT - 180
 
 #[derive(Component)]
-pub struct CoordsText;
-
-#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
-pub struct VoxelMaterial {
-    #[texture(1)]
-    #[sampler(2)]
-    pub color_texture: Option<Handle<Image>>,
-}
-
-impl Material for VoxelMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "shaders/voxel.wgsl".into()
-    }
-}
+struct HUDText;
 
 fn setup(
     mut commands: Commands,
     mut materials: ResMut<Assets<VoxelMaterial>>,
     mut window: Single<&mut Window, With<PrimaryWindow>>,
+    mut game_info: ResMut<GameInfo>,
     persistent_saved_chunks: Res<Persistent<SavedWorld>>,
     asset_server: Res<AssetServer>,
 ) {
     let seed = persistent_saved_chunks.0;
 
-    let atlas = asset_server.load("atlas.ktx2");
+    game_info.seed = seed;
+    game_info.saved_chunks = Arc::new(RwLock::new(persistent_saved_chunks.1.clone()));
+    game_info.materials.push(materials.add(VoxelMaterial {
+        color_texture: Some(asset_server.load("atlas.ktx2")),
+    }));
+    game_info
+        .models
+        .push(asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/ferris.glb")));
+    game_info.current_block = BlockKind::Stone;
 
-    commands.insert_resource(GameInfo {
-        seed,
-        chunks: Arc::new(RwLock::new(HashMap::new())),
-        loading_chunks: Arc::new(RwLock::new(HashSet::new())),
-        saved_chunks: Arc::new(RwLock::new(persistent_saved_chunks.1.clone())),
-        assets: vec![atlas.clone()],
-        materials: vec![materials.add(VoxelMaterial {
-            color_texture: Some(atlas),
-        })],
-        models: vec![asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/ferris.glb"))],
-        despawn_tasks: Vec::new(),
-        current_block: BlockKind::Stone,
-        loaded: false,
-    });
-    commands.insert_resource(GameSettings {
-        movement_speed: 3.0,
-        sensitivity: 1.2,
-        fov: 60,
-        render_distance: 16,
-        chunk_spawn_pf: 50,
-        mesh_update_pf: 10,
-        gravity: 23.31,
-        jump_force: 7.7,
-        despawn_chunks: true,
-        #[cfg(debug_assertions)]
-        debug_menus: true,
-        #[cfg(not(debug_assertions))]
-        debug_menus: false,
-        hitboxes: false,
-        chunk_borders: false,
-        paused: false,
-    });
+    toggle_grab_cursor(&mut window);
+
+    commands.spawn(PerfUiAllEntries::default());
+
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 5_000.0,
+            shadows_enabled: true,
+            ..default()
+        },
+        Transform::from_rotation(Quat::from_euler(
+            EulerRot::ZYX,
+            0.0,
+            33.5_f32.to_radians(),
+            -47.3_f32.to_radians(),
+        )),
+    ));
 
     let player = commands
         .spawn((
@@ -254,16 +220,11 @@ fn setup(
         Camera3d::default(),
         PlayerCamera,
         PostProcessSettings::default(),
-        // Msaa::Sample8,
-        // Fxaa::default(),
         Transform::from_xyz(0.0, 1.62, -0.05).looking_at(Vec3::ZERO, Vec3::Y), // minecraft way
         ChildOf(player),
     ));
 
-    toggle_grab_cursor(&mut window);
-
-    commands.spawn(PerfUiAllEntries::default());
-    commands
+    let ui = commands
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
@@ -272,26 +233,9 @@ fn setup(
             },
             GlobalZIndex(i32::MAX),
         ))
-        .with_children(|p| {
-            p.spawn(Text::default()).with_children(|p| {
-                p.spawn((TextSpan::new("Coords: "), CoordsText));
-            });
-        });
-    // commands.spawn(Text2d::new("hello world"));
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 5_000.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        // light idk
-        Transform::from_rotation(Quat::from_euler(
-            EulerRot::ZYX,
-            0.0,
-            33.5_f32.to_radians(),
-            -47.3_f32.to_radians(),
-        )),
-    ));
+        .id();
+
+    commands.spawn((Text::default(), HUDText, ChildOf(ui)));
 }
 
 fn update(
@@ -299,7 +243,7 @@ fn update(
     mut gizmos: Gizmos,
     mut game_info: ResMut<GameInfo>,
     mut perf_ui: Query<&mut Visibility, With<PerfUiEntryFPS>>,
-    mut coords_text: Single<&mut TextSpan, With<CoordsText>>,
+    mut coords_text: Single<&mut Text, With<HUDText>>,
     mut persistent_saved_chunks: ResMut<Persistent<SavedWorld>>,
     mut primary_window: Single<&mut Window, With<PrimaryWindow>>,
     mut mouse_scroll: EventReader<MouseWheel>,
@@ -307,7 +251,7 @@ fn update(
     mut camera: Single<(&Transform, &mut Projection, &mut PostProcessSettings)>,
     player: Single<&Transform, With<Player>>,
     game_entities: Query<(Entity, &GameEntity)>,
-    chunks: Query<(Entity, &Transform), With<ChunkEntity>>,
+    chunks: Query<(Entity, &Transform), With<ChunkMarker>>,
     mouse: Res<ButtonInput<MouseButton>>,
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
@@ -322,10 +266,17 @@ fn update(
                     })
                     .unwrap();
             }
+            KeyCode::F2 => {
+                commands
+                    .spawn(Screenshot::primary_window())
+                    .observe(save_to_disk(Path::new("screenshots").join(format!(
+                        "screenshot-{}.png",
+                        chrono::Local::now().format("%Y-%m-%d-%H-%M-%S%.3fZ")
+                    ))));
+            }
             KeyCode::F3 => {
                 game_settings.debug_menus = !game_settings.debug_menus;
             }
-            // f3 + h is hard to press on a 60% keyboard so f4 it is
             KeyCode::F4 => {
                 game_settings.hitboxes = !game_settings.hitboxes;
             }
@@ -337,16 +288,6 @@ fn update(
                 if camera.2.sss > 8 {
                     camera.2.sss = 0;
                 }
-
-                // for (chunk, _) in chunks.iter() {
-                //     commands
-                //         .entity(chunk)
-                //         .try_remove::<MeshMaterial3d<VoxelMaterial>>()
-                //         .try_insert(MeshMaterial3d(
-                //             game_info.materials[game_settings.super_secret_settings as usize]
-                //                 .clone(),
-                //         ));
-                // }
             }
             KeyCode::F11 => {
                 primary_window.mode = if primary_window.mode == WindowMode::Windowed {
@@ -573,357 +514,4 @@ fn update(
             }
         }
     }
-}
-
-fn handle_chunk_gen(
-    mut commands: Commands,
-    game_info: Res<GameInfo>,
-    game_settings: Res<GameSettings>,
-    player: Single<&Transform, With<Player>>,
-) {
-    let pt = player.translation;
-    let thread_pool = AsyncComputeTaskPool::get();
-    let render_distance = game_settings.render_distance;
-
-    for chunk_z in
-        (pt.z as i32 / CHUNK_SIZE - render_distance)..(pt.z as i32 / CHUNK_SIZE + render_distance)
-    {
-        for chunk_x in (pt.x as i32 / CHUNK_SIZE - render_distance)
-            ..(pt.x as i32 / CHUNK_SIZE + render_distance)
-        {
-            let pos = ivec3(chunk_x, 0, chunk_z);
-
-            let Ok(chunks_guard) = game_info.chunks.read() else {
-                continue;
-            };
-            let Ok(loading_chunks_guard) = game_info.loading_chunks.read() else {
-                continue;
-            };
-
-            if chunks_guard.contains_key(&pos) || loading_chunks_guard.contains(&pos) {
-                continue;
-            }
-            drop(chunks_guard);
-            drop(loading_chunks_guard);
-
-            game_info.loading_chunks.write().unwrap().insert(pos);
-
-            let seed = game_info.seed;
-            let chunks = game_info.chunks.clone();
-            let saved_chunks = game_info.saved_chunks.clone();
-            let task = thread_pool.spawn(async move {
-                let mut chunk = Chunk::new(pos);
-
-                for rela_z in 0..CHUNK_SIZE {
-                    for rela_x in 0..CHUNK_SIZE {
-                        let pos = vec2(
-                            (rela_x + pos.x * CHUNK_SIZE) as f32,
-                            (rela_z + pos.z * CHUNK_SIZE) as f32,
-                        );
-                        let (max_y, biome) = terrain_noise(pos, seed);
-
-                        for y in 0..CHUNK_HEIGHT {
-                            chunk.blocks[vec3_to_index(ivec3(rela_x, y, rela_z))] =
-                                generate_block_at(ivec3(pos.x as i32, y, pos.y as i32), seed);
-
-                            if y == max_y
-                                && max_y > SEA_LEVEL
-                                && biome < 0.4
-                                && ferris_noise(pos, seed) > 0.85
-                            {
-                                chunk.entities.push((
-                                    Entity::PLACEHOLDER,
-                                    GameEntity {
-                                        kind: GameEntityKind::Ferris,
-                                        pos: vec3(pos.x, y as f32, pos.y),
-                                        rot: rand::random_range(0..360) as f32,
-                                    },
-                                ));
-                            }
-                            // chunk.blocks[vec3_to_index(ivec3(rela_x, y, rela_z))] = if y == 0 {
-                            //     Block::BEDROCK
-                            // } else if y < max_y {
-                            //     match y {
-                            //         _ if y > 165 => Block::SNOW,
-                            //         _ if y > 140 => Block::STONE,
-                            //         _ if y == max_y - 1 => Block::GRASS,
-                            //         _ if y >= max_y - 4 => Block::DIRT,
-                            //         _ => Block::STONE,
-                            //     }
-                            // } else if y < SEA_LEVEL {
-                            //     Block::WATER
-                            // } else {
-                            //     Block::AIR
-                            // };
-                        }
-
-                        let tree_probabilty = tree_noise(pos, seed);
-
-                        if tree_probabilty > 0.85 && max_y < 90 && max_y > SEA_LEVEL + 2 {
-                            for (y, tree_layer) in TREE_OBJECT.iter().enumerate() {
-                                for (z, tree_row) in tree_layer.iter().enumerate() {
-                                    for (x, block) in tree_row.iter().enumerate() {
-                                        let mut pos = ivec3(3 + x as i32, y as i32, 3 + z as i32);
-                                        let (local_max_y, _) = terrain_noise(
-                                            (chunk.pos * CHUNK_SIZE + pos).as_vec3().xz(),
-                                            seed,
-                                        );
-
-                                        pos.y += local_max_y;
-
-                                        if (0..CHUNK_SIZE).contains(&pos.x)
-                                            && (0..CHUNK_HEIGHT).contains(&pos.y)
-                                            && (0..CHUNK_SIZE).contains(&pos.z)
-                                        {
-                                            chunk.blocks[vec3_to_index(pos)] = *block;
-                                        } else if let Some(relative_chunk_key) =
-                                            chunk.get_relative_chunk(pos)
-                                            && let Some(target_chunk) =
-                                                chunks.write().unwrap().get_mut(&relative_chunk_key)
-                                        {
-                                            let block_index = vec3_to_index(
-                                                pos - relative_chunk_key * CHUNK_SIZE,
-                                            );
-                                            if block_index < target_chunk.blocks.len() {
-                                                target_chunk.blocks[block_index] = *block;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if let Some(saved_chunk) = saved_chunks.read().unwrap().get(&pos) {
-                    for (pos, block) in &saved_chunk.blocks {
-                        chunk.blocks[vec3_to_index(*pos)] = *block;
-                    }
-                    chunk.entities = saved_chunk.entities.clone();
-                }
-                (chunk, pos)
-            });
-            commands.spawn(ComputeChunk(task));
-        }
-    }
-}
-
-fn handle_mesh_gen(
-    mut commands: Commands,
-    game_info: Res<GameInfo>,
-    chunks_query: Query<(Entity, &Transform), Added<ChunkEntity>>,
-) {
-    let thread_pool = AsyncComputeTaskPool::get();
-
-    for (entity, chunk_transform) in chunks_query.iter() {
-        let chunk_coords = chunk_transform.translation.as_ivec3() / CHUNK_SIZE;
-
-        let chunks_for_task = game_info.chunks.clone();
-        let seed = game_info.seed;
-
-        let task = thread_pool.spawn(async move {
-            let chunks_map_guard = chunks_for_task.read().unwrap();
-
-            let chunk_data_option = chunks_map_guard.get(&chunk_coords);
-
-            if let Some(chunk_data) = chunk_data_option {
-                build_chunk_mesh(chunk_data, &chunks_map_guard, seed)
-            } else {
-                None
-            }
-        });
-
-        commands.entity(entity).try_insert(ComputeChunkMesh(task));
-    }
-}
-
-fn handle_chunk_despawn(
-    mut game_info: ResMut<GameInfo>,
-    game_settings: Res<GameSettings>,
-    chunks_query: Query<(Entity, &Transform), With<ChunkEntity>>,
-    player: Single<&Transform, With<Player>>,
-) {
-    let pt = player.translation;
-    let thread_pool = AsyncComputeTaskPool::get();
-    let render_distance = game_settings.render_distance;
-
-    let mut chunks_to_check: Vec<(IVec3, Entity)> = Vec::new();
-    for (entity, transform) in chunks_query.iter() {
-        let chunk_key = transform.translation.as_ivec3() / CHUNK_SIZE;
-        chunks_to_check.push((chunk_key, entity));
-    }
-
-    if chunks_to_check.is_empty() {
-        return;
-    }
-
-    let task = thread_pool.spawn(async move {
-        let mut despawn_list: Vec<(Entity, IVec3)> = Vec::new();
-        for (chunk_key, entity) in chunks_to_check {
-            if (chunk_key.x + render_distance < pt.x as i32 / CHUNK_SIZE)
-                || (chunk_key.x - render_distance > pt.x as i32 / CHUNK_SIZE)
-                || (chunk_key.z + render_distance < pt.z as i32 / CHUNK_SIZE)
-                || (chunk_key.z - render_distance > pt.z as i32 / CHUNK_SIZE)
-            {
-                despawn_list.push((entity, chunk_key));
-            }
-        }
-        despawn_list
-    });
-    game_info.despawn_tasks.push(task);
-}
-
-#[derive(Component)]
-struct ComputeChunk(Task<(Chunk, IVec3)>);
-
-#[derive(Component)]
-struct ComputeChunkMesh(Task<Option<ChunkMesh>>);
-
-fn process_tasks(
-    mut commands: Commands,
-    mut mesh_tasks: Query<(Entity, &mut ComputeChunkMesh)>,
-    mut spawn_tasks: Query<(Entity, &mut ComputeChunk)>,
-    mut game_info: ResMut<GameInfo>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    game_settings: Res<GameSettings>,
-) {
-    // SPAWNING CHUNKS
-    let mut processed_this_frame = 0;
-    for (entity, mut compute_task) in spawn_tasks.iter_mut() {
-        if processed_this_frame >= game_settings.chunk_spawn_pf && game_settings.chunk_spawn_pf >= 0
-        {
-            break;
-        }
-        if let Some((mut chunk, pos)) = future::block_on(future::poll_once(&mut compute_task.0)) {
-            let mut write_guard = game_info.saved_chunks.write().unwrap();
-            if let Some(saved_chunk) = write_guard.get_mut(&pos) {
-                if saved_chunk.entities != chunk.entities {
-                    saved_chunk.entities = chunk.entities.clone();
-                }
-            } else {
-                write_guard.insert(
-                    pos,
-                    SavedChunk {
-                        pos,
-                        entities: chunk.entities.clone(),
-                        ..default()
-                    },
-                );
-            }
-            drop(write_guard);
-            for (e, game_entity) in chunk.entities.iter_mut() {
-                *e = commands
-                    .spawn((
-                        *game_entity,
-                        SceneRoot(game_info.models[game_entity.kind as usize].clone()),
-                        Transform::from_translation(game_entity.pos + vec3(0.5, 0.0, 0.5))
-                            .with_scale(Vec3::splat(2.0))
-                            .with_rotation(Quat::from_rotation_y(game_entity.rot)),
-                    ))
-                    .id();
-            }
-            commands
-                .entity(entity)
-                .try_insert((
-                    ChunkEntity,
-                    Aabb::from_min_max(
-                        vec3(0.0, 0.0, 0.0),
-                        vec3(CHUNK_SIZE as f32, CHUNK_HEIGHT as f32, CHUNK_SIZE as f32),
-                    ),
-                    Transform::from_translation((pos * CHUNK_SIZE).as_vec3()),
-                ))
-                .try_remove::<ComputeChunk>();
-
-            game_info.chunks.write().unwrap().insert(pos, chunk);
-            game_info.loading_chunks.write().unwrap().remove(&pos);
-
-            processed_this_frame += 1;
-        }
-    }
-
-    // GENERATING MESHES
-    let mut processed_this_frame = 0;
-
-    for (entity, mut compute_task) in mesh_tasks.iter_mut() {
-        if processed_this_frame >= game_settings.mesh_update_pf && game_settings.chunk_spawn_pf >= 0
-        {
-            break;
-        }
-
-        if let Some(result) = future::block_on(future::poll_once(&mut compute_task.0)) {
-            commands.entity(entity).try_remove::<ComputeChunkMesh>();
-
-            if let Some(mesh_data) = result {
-                let mut bevy_mesh = Mesh::new(
-                    PrimitiveTopology::TriangleList,
-                    RenderAssetUsages::RENDER_WORLD,
-                );
-                let mut positions = Vec::new();
-                let mut normals = Vec::new();
-
-                for &vertex in mesh_data.vertices.iter() {
-                    let (pos, _ao, normal, _block_type) = get_vertex_u32(vertex);
-                    positions.push(pos);
-                    normals.push(normal);
-                }
-
-                bevy_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-                bevy_mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-                bevy_mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, mesh_data.uvs);
-                bevy_mesh.insert_indices(Indices::U32(mesh_data.indices));
-
-                let mesh_handle = meshes.add(bevy_mesh);
-
-                commands.entity(entity).try_insert((
-                    Mesh3d(mesh_handle),
-                    MeshMaterial3d(game_info.materials[0].clone()),
-                    Visibility::Visible,
-                ));
-            } else {
-                error!("Error building chunk mesh for entity {:?}", entity);
-            }
-            processed_this_frame += 1;
-        }
-    }
-
-    // DESPAWNING CHUNKS
-    let chunks = game_info.chunks.clone();
-    let loading_chunks = game_info.loading_chunks.clone();
-
-    if !game_info.loaded {
-        let read_guard = chunks.read().unwrap();
-        if read_guard.len()
-            == ((game_settings.render_distance * 2) * (game_settings.render_distance * 2)) as usize
-        {
-            game_info.loaded = true;
-        }
-        drop(read_guard);
-    }
-
-    game_info.despawn_tasks.retain_mut(|mut compute_task| {
-        if let Some(despawn_list) = future::block_on(future::poll_once(&mut compute_task)) {
-            let game_chunks_read_guard = chunks.read().unwrap();
-            for (_, chunk_key) in despawn_list.iter() {
-                let chunk_entities = &game_chunks_read_guard.get(chunk_key).map(|x| &x.entities);
-                if let Some(chunk_entities) = chunk_entities {
-                    for (entity, _) in chunk_entities.iter() {
-                        if *entity != Entity::PLACEHOLDER {
-                            commands.entity(*entity).try_despawn();
-                        }
-                    }
-                }
-            }
-            drop(game_chunks_read_guard);
-            let mut game_chunks_write_guard = chunks.write().unwrap();
-            let mut game_loading_chunks_write_guard = loading_chunks.write().unwrap();
-            for (entity_to_despawn, chunk_key) in despawn_list {
-                commands.entity(entity_to_despawn).try_despawn();
-
-                game_chunks_write_guard.remove(&chunk_key);
-                game_loading_chunks_write_guard.remove(&chunk_key);
-            }
-            return false;
-        }
-        true
-    });
 }
