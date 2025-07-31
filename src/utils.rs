@@ -242,35 +242,36 @@ pub fn place_block(
     commands: &mut Commands,
     saved_chunks: &mut HashMap<IVec3, SavedChunk>,
     chunk: &mut Chunk,
-    chunk_pos: IVec3,
     chunks: &Query<(Entity, &Transform), With<ChunkEntity>>,
     pos: IVec3,
     block: Block,
 ) {
     chunk.blocks[vec3_to_index(pos)] = block;
-    if let Entry::Vacant(e) = saved_chunks.entry(chunk_pos) {
-        e.insert(SavedChunk {
-            pos: chunk_pos,
-            blocks: HashMap::from([(pos, block)]),
-            entities: chunk.entities.clone(),
-        });
-    } else {
-        let old_save = saved_chunks.get_mut(&chunk_pos).unwrap();
-        old_save.blocks.insert(pos, block);
+    match saved_chunks.entry(chunk.pos) {
+        Entry::Vacant(e) => {
+            e.insert(SavedChunk {
+                pos: chunk.pos,
+                blocks: HashMap::from([(pos, block)]),
+                entities: chunk.entities.clone(),
+            });
+        }
+        Entry::Occupied(mut e) => {
+            e.get_mut().blocks.insert(pos, block);
+        }
     }
     if pos.x == 0 {
-        update_chunk(commands, chunks, chunk_pos - IVec3::X);
+        update_chunk(commands, chunks, chunk.pos - IVec3::X);
     }
     if pos.x == CHUNK_SIZE - 1 {
-        update_chunk(commands, chunks, chunk_pos + IVec3::X);
+        update_chunk(commands, chunks, chunk.pos + IVec3::X);
     }
     if pos.z == 0 {
-        update_chunk(commands, chunks, chunk_pos - IVec3::Z);
+        update_chunk(commands, chunks, chunk.pos - IVec3::Z);
     }
     if pos.z == CHUNK_SIZE - 1 {
-        update_chunk(commands, chunks, chunk_pos + IVec3::Z);
+        update_chunk(commands, chunks, chunk.pos + IVec3::Z);
     }
-    update_chunk(commands, chunks, chunk_pos);
+    update_chunk(commands, chunks, chunk.pos);
 }
 
 #[derive(Debug)]

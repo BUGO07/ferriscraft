@@ -29,7 +29,7 @@
 `f3` debug menus\
 `f4` toggle hitboxes\
 `f6` chunk borders\
-`f7` white world\
+`f7` super secret settings\
 `f11` toggle fullscreen
 
 
