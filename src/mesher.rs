@@ -1,14 +1,14 @@
-use std::{collections::HashMap, hash::Hash};
+use std::collections::HashMap;
 
 use bevy::prelude::*;
-use serde::{Deserialize, Serialize};
 
 use crate::{
     CHUNK_HEIGHT, CHUNK_SIZE,
     utils::{
-        Block, Direction, Quad, generate_block_at, generate_indices, index_to_vec3,
-        make_vertex_u32, vec3_to_index,
+        Direction, Quad, generate_block_at, generate_indices, index_to_vec3, make_vertex_u32,
+        vec3_to_index,
     },
+    world::{Block, Chunk},
 };
 
 #[derive(Default)]
@@ -18,46 +18,13 @@ pub struct ChunkMesh {
     pub uvs: Vec<[f32; 2]>,
 }
 
-#[derive(Component)]
-pub struct ChunkEntity;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum GameEntityKind {
-    Ferris,
-}
-
-#[derive(Component, Clone, Copy, Serialize, Deserialize, PartialEq)]
-pub struct GameEntity {
-    pub kind: GameEntityKind,
-    pub pos: Vec3,
-    pub rot: f32,
-}
-
-#[derive(Clone)]
-pub struct Chunk {
-    pub pos: IVec3,
-    pub entities: Vec<(Entity, GameEntity)>,
-    pub blocks: Vec<Block>,
-}
-
-#[derive(Resource, Clone, Default, Serialize, Deserialize)]
-pub struct SavedWorld(pub u32, pub HashMap<IVec3, SavedChunk>);
-
-#[derive(Serialize, Deserialize, Clone, Default)]
-pub struct SavedChunk {
-    pub pos: IVec3,
-    pub entities: Vec<(Entity, GameEntity)>,
-    pub blocks: HashMap<IVec3, Block>, // placed/broken blocks
-}
-
 fn push_face(mesh: &mut ChunkMesh, dir: Direction, vpos: IVec3, block: Block) {
     let quad = Quad::from_direction(dir, vpos, IVec3::ONE);
 
     for (i, corner) in quad.corners.into_iter().enumerate() {
         mesh.vertices.push(make_vertex_u32(
             IVec3::from_array(corner),
-            0,
-            dir.get_normal(),
+            dir as u32,
             block.kind as u32,
         ));
 
@@ -112,7 +79,7 @@ impl Chunk {
         Chunk {
             pos,
             entities: Vec::new(),
-            blocks: vec![Block::default(); (CHUNK_SIZE * CHUNK_HEIGHT * CHUNK_SIZE) as usize],
+            blocks: vec![Block::DEFAULT; (CHUNK_SIZE * CHUNK_HEIGHT * CHUNK_SIZE) as usize],
         }
     }
     pub fn get_block(&self, pos: IVec3) -> &Block {

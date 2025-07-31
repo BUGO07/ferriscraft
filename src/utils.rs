@@ -1,6 +1,6 @@
 use std::collections::{HashMap, hash_map::Entry};
 
-use bevy::prelude::*;
+use bevy::{prelude::*, window::CursorGrabMode};
 use bevy_inspector_egui::egui::lerp;
 use noiz::{
     Noise, NoiseFunction, SampleableFor,
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     CHUNK_HEIGHT, CHUNK_SIZE, GameInfo, SEA_LEVEL,
-    mesher::{Chunk, ChunkEntity, SavedChunk},
+    world::{Block, BlockKind, Chunk, ChunkMarker, SavedChunk},
 };
 
 #[inline]
@@ -48,7 +48,7 @@ pub fn generate_indices(vertex_count: usize) -> Vec<u32> {
 }
 
 #[inline]
-pub fn make_vertex_u32(pos: IVec3, _ao: u32, normal: u32, block_type: u32) -> u32 {
+pub fn make_vertex_u32(pos: IVec3, normal: u32, block_type: u32) -> u32 {
     (pos.x as u32 & 0x3F)               // 6 bits for x (0-5)
         | ((pos.y as u32 & 0x1FF) << 6) // 9 bits for y (6-14)
         | ((pos.z as u32 & 0x3F) << 15) // 6 bits for z (15-20)
@@ -57,8 +57,8 @@ pub fn make_vertex_u32(pos: IVec3, _ao: u32, normal: u32, block_type: u32) -> u3
 }
 
 #[inline]
-// pos, ao, normal, block_type
-pub fn get_vertex_u32(vertex: u32) -> ([f32; 3], u32, [f32; 3], u32) {
+// pos, normal, block_type
+pub fn get_vertex_u32(vertex: u32) -> ([f32; 3], [f32; 3], u32) {
     let x = (vertex & 0x3F) as f32;
     let y = ((vertex >> 6) & 0x1FF) as f32;
     let z = ((vertex >> 15) & 0x3F) as f32;
@@ -67,7 +67,6 @@ pub fn get_vertex_u32(vertex: u32) -> ([f32; 3], u32, [f32; 3], u32) {
 
     (
         [x, y, z],
-        0, // ao (not yet)
         Direction::NORMALS[normal_index as usize],
         block_type,
     )
@@ -188,14 +187,6 @@ pub fn terrain_noise(pos: Vec2, seed: u32) -> (i32, f32) {
         (current_min_height + (biased_noise * height_range)) as i32,
         normalized_biome_value,
     )
-
-    // height.max(1.0).min((CHUNK_HEIGHT - 1) as f32) as i32
-
-    // .powf(2.0)
-    //     / 3.0
-    //     * (CHUNK_HEIGHT) as f32) as i32
-    // + SEA_LEVEL
-    // [-1.0 .. 1.0] -> [0.0 .. 2.0] -> [0 .. CHUNK_HEIGHT - SEA_LEVEL] + SEA_LEVEL
 }
 
 #[inline]
@@ -222,27 +213,40 @@ pub fn ferris_noise(pos: Vec2, seed: u32) -> f32 {
     )
 }
 
+#[inline]
+pub fn toggle_grab_cursor(window: &mut Window) {
+    match window.cursor_options.grab_mode {
+        CursorGrabMode::None => {
+            window.cursor_options.grab_mode = CursorGrabMode::Locked;
+            window.cursor_options.visible = false;
+        }
+        _ => {
+            window.cursor_options.grab_mode = CursorGrabMode::None;
+            window.cursor_options.visible = true;
+        }
+    }
+}
+
 pub fn update_chunk(
     commands: &mut Commands,
-    chunks: &Query<(Entity, &Transform), With<ChunkEntity>>,
+    chunks: &Query<(Entity, &Transform), With<ChunkMarker>>,
     pos: IVec3,
 ) {
     for (entity, transform) in chunks.iter() {
         if (transform.translation / CHUNK_SIZE as f32).as_ivec3() == pos {
             commands
                 .entity(entity)
-                .try_remove::<ChunkEntity>()
-                .try_insert(ChunkEntity);
+                .try_remove::<ChunkMarker>()
+                .try_insert(ChunkMarker);
         }
     }
 }
 
-// very shitty way but it works
 pub fn place_block(
     commands: &mut Commands,
     saved_chunks: &mut HashMap<IVec3, SavedChunk>,
     chunk: &mut Chunk,
-    chunks: &Query<(Entity, &Transform), With<ChunkEntity>>,
+    chunks: &Query<(Entity, &Transform), With<ChunkMarker>>,
     pos: IVec3,
     block: Block,
 ) {
@@ -280,7 +284,7 @@ pub struct RayHit {
     pub chunk_pos: IVec3,
     pub local_pos: IVec3,
     pub normal: Direction,
-    pub block: Block,
+    pub _block: Block,
     pub distance: f32,
 }
 
@@ -405,7 +409,7 @@ pub fn ray_cast(
                         chunk_pos,
                         local_pos: local_block_pos,
                         normal,
-                        block,
+                        _block: block,
                         distance: current_distance,
                     });
                 }
@@ -416,12 +420,7 @@ pub fn ray_cast(
     None
 }
 
-#[derive(Component, Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Block {
-    pub kind: BlockKind,
-    pub direction: Direction,
-}
-
+#[allow(dead_code)]
 impl Block {
     pub const DEFAULT: Self = Self::AIR;
     pub const AIR: Self = Self {
@@ -470,23 +469,6 @@ impl Block {
     };
 }
 
-#[repr(u32)]
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, Serialize, Deserialize)]
-pub enum BlockKind {
-    #[default]
-    Air,
-    Stone,
-    Dirt,
-    Grass,
-    Plank,
-    Bedrock,
-    Water,
-    Sand,
-    Wood,
-    Leaf,
-    Snow,
-}
-
 impl BlockKind {
     pub fn is_solid(self) -> bool {
         self != BlockKind::Air && self != BlockKind::Water
@@ -521,22 +503,6 @@ impl BlockKind {
     }
 }
 
-// * using textures now
-// pub fn kind2color(kind: BlockKind) -> Color {
-//     let color: u32 = match kind {
-//         BlockKind::Air => 0x00000000,
-//         BlockKind::Stone => 0xFFA39E99,
-//         BlockKind::Dirt => 0xFF915E34,
-//         BlockKind::Grass => 0xFF119C13,
-//         BlockKind::Plank => 0xFFA39E99,
-//     };
-//     let b = color & 0xFF;
-//     let g = (color >> 8) & 0xFF;
-//     let r = (color >> 16) & 0xFF;
-//     let a = (color >> 24) & 0xFF;
-//     Color::srgba_u8(r as u8, g as u8, b as u8, a as u8)
-// }
-
 #[repr(u32)]
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug, Serialize, Deserialize)]
 pub enum Direction {
@@ -551,22 +517,17 @@ pub enum Direction {
 
 impl Direction {
     pub const NORMALS: &[[f32; 3]; 6] = &[
-        [-1.0, 0.0, 0.0], // West
-        [1.0, 0.0, 0.0],  // East
+        [-1.0, 0.0, 0.0], // Left
+        [1.0, 0.0, 0.0],  // Right
         [0.0, -1.0, 0.0], // Bottom
         [0.0, 1.0, 0.0],  // Top
-        [0.0, 0.0, -1.0], // South
-        [0.0, 0.0, 1.0],  // North
+        [0.0, 0.0, -1.0], // Back
+        [0.0, 0.0, 1.0],  // Front
     ];
 
     #[inline]
-    pub fn get_normal(self) -> u32 {
-        self as u32
-    }
-
-    #[inline]
     pub fn get_normal3d(self) -> [f32; 3] {
-        Self::NORMALS[self.get_normal() as usize]
+        Self::NORMALS[self as usize]
     }
 
     #[inline]
@@ -575,52 +536,28 @@ impl Direction {
     }
 
     #[inline]
-    pub fn get_opposite(self) -> Self {
-        match self {
-            Direction::Left => Direction::Right,
-            Direction::Right => Direction::Left,
-            Direction::Bottom => Direction::Top,
-            Direction::Top => Direction::Bottom,
-            Direction::Back => Direction::Front,
-            Direction::Front => Direction::Back,
-        }
-    }
-
-    #[inline]
     // bad code final boss
     // i don't know how to deal with the dark magic of rust macros so this is what is gonna be
     pub fn get_uvs(self, block: Block) -> [[f32; 2]; 4] {
-        let face_idx = match block.direction {
-            Direction::Top => match self {
-                Direction::Top => 0.0,
-                Direction::Bottom => 2.0,
-                _ => 1.0,
-            },
-            Direction::Bottom => match self {
-                Direction::Top => 2.0,
-                Direction::Bottom => 0.0,
-                _ => 1.0,
-            },
-            Direction::Right => match self {
-                Direction::Right => 0.0,
-                Direction::Left => 2.0,
-                _ => 1.0,
-            },
-            Direction::Left => match self {
-                Direction::Right => 2.0,
-                Direction::Left => 0.0,
-                _ => 1.0,
-            },
-            Direction::Front => match self {
-                Direction::Front => 0.0,
-                Direction::Back => 2.0,
-                _ => 1.0,
-            },
-            Direction::Back => match self {
-                Direction::Front => 2.0,
-                Direction::Back => 0.0,
-                _ => 1.0,
-            },
+        let face_idx = match (block.direction, self) {
+            (Direction::Top, Direction::Top) => 0.0,
+            (Direction::Top, Direction::Bottom) => 2.0,
+            (Direction::Top, _) => 1.0,
+            (Direction::Bottom, Direction::Bottom) => 0.0,
+            (Direction::Bottom, Direction::Top) => 2.0,
+            (Direction::Bottom, _) => 1.0,
+            (Direction::Left, Direction::Left) => 0.0,
+            (Direction::Left, Direction::Right) => 2.0,
+            (Direction::Left, _) => 1.0,
+            (Direction::Right, Direction::Right) => 0.0,
+            (Direction::Right, Direction::Left) => 2.0,
+            (Direction::Right, _) => 1.0,
+            (Direction::Back, Direction::Back) => 0.0,
+            (Direction::Back, Direction::Front) => 2.0,
+            (Direction::Back, _) => 1.0,
+            (Direction::Front, Direction::Front) => 0.0,
+            (Direction::Front, Direction::Back) => 2.0,
+            (Direction::Front, _) => 1.0,
         };
 
         const ATLAS_SIZE_X: f32 = 3.0;
@@ -636,49 +573,42 @@ impl Direction {
         let bottom_right = [pos.x + 1.0 / ATLAS_SIZE_X, pos.y + 1.0 / ATLAS_SIZE_Y];
         let bottom_left = [pos.x, pos.y + 1.0 / ATLAS_SIZE_Y];
 
-        // HOLY OVERENGINEERED BAD CODE
+        let default = [bottom_left, top_left, top_right, bottom_right];
+        let rotate_90 = [bottom_right, bottom_left, top_left, top_right];
+        let rotate_180 = [top_right, bottom_right, bottom_left, top_left];
+        let rotate_270 = [top_left, top_right, bottom_right, bottom_left];
+
+        // HOLY BAD CODE
         match block.direction {
             Direction::Top => match self {
-                Direction::Front | Direction::Back => {
-                    [bottom_left, top_left, top_right, bottom_right]
-                }
-                Direction::Left => [bottom_right, bottom_left, top_left, top_right],
-                _ => [top_left, top_right, bottom_right, bottom_left],
+                Direction::Front | Direction::Back => default,
+                Direction::Left => rotate_90,
+                _ => rotate_270,
             },
             Direction::Bottom => match self {
-                Direction::Front | Direction::Back => {
-                    [top_right, bottom_right, bottom_left, top_left]
-                }
-                Direction::Left => [top_left, top_right, bottom_right, bottom_left],
-                _ => [bottom_right, bottom_left, top_left, top_right],
+                Direction::Front | Direction::Back => rotate_180,
+                Direction::Left => rotate_270,
+                _ => rotate_90,
             },
             Direction::Right => match self {
-                Direction::Top | Direction::Bottom => {
-                    [bottom_left, top_left, top_right, bottom_right]
-                }
-                Direction::Back => [bottom_right, bottom_left, top_left, top_right],
-                _ => [top_left, top_right, bottom_right, bottom_left],
+                Direction::Top | Direction::Bottom => default,
+                Direction::Back => rotate_90,
+                _ => rotate_270,
             },
             Direction::Left => match self {
-                Direction::Top | Direction::Bottom => {
-                    [top_right, bottom_right, bottom_left, top_left]
-                }
-                Direction::Back => [top_left, top_right, bottom_right, bottom_left],
-                _ => [bottom_right, bottom_left, top_left, top_right],
+                Direction::Top | Direction::Bottom => rotate_180,
+                Direction::Back => rotate_270,
+                _ => rotate_90,
             },
             Direction::Front => match self {
-                Direction::Right | Direction::Left => {
-                    [bottom_left, top_left, top_right, bottom_right]
-                }
-                Direction::Bottom => [bottom_right, bottom_left, top_left, top_right],
-                _ => [top_left, top_right, bottom_right, bottom_left],
+                Direction::Right | Direction::Left => default,
+                Direction::Bottom => rotate_90,
+                _ => rotate_270,
             },
             Direction::Back => match self {
-                Direction::Right | Direction::Left => {
-                    [top_right, bottom_right, bottom_left, top_left]
-                }
-                Direction::Bottom => [top_left, top_right, bottom_right, bottom_left],
-                _ => [bottom_right, bottom_left, top_left, top_right],
+                Direction::Right | Direction::Left => rotate_180,
+                Direction::Bottom => rotate_270,
+                _ => rotate_90,
             },
         }
     }
@@ -728,7 +658,7 @@ pub fn generate_block_at(pos: IVec3, seed: u32) -> Block {
 }
 
 pub struct Quad {
-    pub direction: Direction,
+    pub _direction: Direction,
     pub corners: [[i32; 3]; 4],
 }
 
@@ -775,7 +705,10 @@ impl Quad {
             ],
         };
 
-        Self { corners, direction }
+        Self {
+            corners,
+            _direction: direction,
+        }
     }
 }
 

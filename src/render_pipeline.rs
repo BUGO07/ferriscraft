@@ -24,11 +24,26 @@ use bevy::{
         view::ViewTarget,
     },
 };
-pub struct PostProcessPlugin;
 
-impl Plugin for PostProcessPlugin {
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+pub struct VoxelMaterial {
+    #[texture(1)]
+    #[sampler(2)]
+    pub color_texture: Option<Handle<Image>>,
+}
+
+impl Material for VoxelMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/voxel.wgsl".into()
+    }
+}
+
+pub struct RenderPipelinePlugin;
+
+impl Plugin for RenderPipelinePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
+            MaterialPlugin::<VoxelMaterial>::default(),
             ExtractComponentPlugin::<PostProcessSettings>::default(),
             UniformComponentPlugin::<PostProcessSettings>::default(),
         ));

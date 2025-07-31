@@ -1,9 +1,37 @@
-use crate::{GameInfo, GameSettings, utils::ray_cast};
+use crate::{GameInfo, GameSettings, PausableSystems, utils::ray_cast};
 use bevy::{
     input::mouse::MouseMotion,
     prelude::*,
     window::{CursorGrabMode, PrimaryWindow},
 };
+
+pub struct PlayerPlugin;
+
+impl Plugin for PlayerPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
+            Update,
+            (
+                player_movement.run_if(
+                    // only run if chunks have been loaded
+                    |game_info: Res<GameInfo>,
+                     game_settings: Res<GameSettings>,
+                     mut is_loaded: Local<bool>| {
+                        if !*is_loaded {
+                            *is_loaded = game_info.chunks.read().unwrap().len()
+                                == ((game_settings.render_distance * 2)
+                                    * (game_settings.render_distance * 2))
+                                    as usize;
+                        }
+                        *is_loaded
+                    },
+                ),
+                camera_movement,
+            )
+                .in_set(PausableSystems),
+        );
+    }
+}
 
 #[derive(Component)]
 pub struct Player;
@@ -11,7 +39,7 @@ pub struct Player;
 #[derive(Component)]
 pub struct PlayerCamera;
 
-pub fn camera_movement(
+fn camera_movement(
     mut camera: Single<&mut Transform, With<PlayerCamera>>,
     mut mouse: EventReader<MouseMotion>,
     settings: Res<GameSettings>,
@@ -38,7 +66,7 @@ pub fn camera_movement(
 #[derive(Component, Debug, Default)]
 pub struct Velocity(pub Vec3);
 
-pub fn player_movement(
+fn player_movement(
     player: Single<(&mut Transform, &mut Velocity), (With<Player>, Without<PlayerCamera>)>,
     camera: Single<&Transform, (With<PlayerCamera>, Without<Player>)>,
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -203,17 +231,4 @@ pub fn player_movement(
     }
 
     transform.translation += velocity.0 * delta;
-}
-
-pub fn toggle_grab_cursor(window: &mut Window) {
-    match window.cursor_options.grab_mode {
-        CursorGrabMode::None => {
-            window.cursor_options.grab_mode = CursorGrabMode::Locked;
-            window.cursor_options.visible = false;
-        }
-        _ => {
-            window.cursor_options.grab_mode = CursorGrabMode::None;
-            window.cursor_options.visible = true;
-        }
-    }
 }
