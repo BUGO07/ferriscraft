@@ -48,17 +48,17 @@ pub fn generate_indices(vertex_count: usize) -> Vec<u32> {
 }
 
 #[inline]
-pub fn make_vertex_u32(pos: IVec3, normal: u32, block_type: u32) -> u32 {
+pub fn make_vertex_u32(pos: IVec3, normal: Direction, block_type: BlockKind) -> u32 {
     (pos.x as u32 & 0x3F)               // 6 bits for x (0-5)
         | ((pos.y as u32 & 0x1FF) << 6) // 9 bits for y (6-14)
         | ((pos.z as u32 & 0x3F) << 15) // 6 bits for z (15-20)
-        | ((normal & 0x7) << 21)        // 3 bits for normal (21-23)
-        | ((block_type & 0xFF) << 24) // 8 bits for block_type (24-31)
+        | ((normal as u32 & 0x7) << 21)        // 3 bits for normal (21-23)
+        | ((block_type as u32 & 0xFF) << 24) // 8 bits for block_type (24-31)
 }
 
 #[inline]
 // pos, normal, block_type
-pub fn get_vertex_u32(vertex: u32) -> ([f32; 3], [f32; 3], u32) {
+pub fn get_vertex_u32(vertex: u32) -> (Vec3, Vec3, u32) {
     let x = (vertex & 0x3F) as f32;
     let y = ((vertex >> 6) & 0x1FF) as f32;
     let z = ((vertex >> 15) & 0x3F) as f32;
@@ -66,7 +66,7 @@ pub fn get_vertex_u32(vertex: u32) -> ([f32; 3], [f32; 3], u32) {
     let block_type = (vertex >> 24) & 0xFF;
 
     (
-        [x, y, z],
+        vec3(x, y, z),
         Direction::NORMALS[normal_index as usize],
         block_type,
     )
@@ -516,29 +516,24 @@ pub enum Direction {
 }
 
 impl Direction {
-    pub const NORMALS: &[[f32; 3]; 6] = &[
-        [-1.0, 0.0, 0.0], // Left
-        [1.0, 0.0, 0.0],  // Right
-        [0.0, -1.0, 0.0], // Bottom
-        [0.0, 1.0, 0.0],  // Top
-        [0.0, 0.0, -1.0], // Back
-        [0.0, 0.0, 1.0],  // Front
+    pub const NORMALS: &[Vec3; 6] = &[
+        vec3(-1.0, 0.0, 0.0), // Left
+        vec3(1.0, 0.0, 0.0),  // Right
+        vec3(0.0, -1.0, 0.0), // Bottom
+        vec3(0.0, 1.0, 0.0),  // Top
+        vec3(0.0, 0.0, -1.0), // Back
+        vec3(0.0, 0.0, 1.0),  // Front
     ];
 
     #[inline]
-    pub fn get_normal3d(self) -> [f32; 3] {
-        Self::NORMALS[self as usize]
-    }
-
-    #[inline]
     pub fn as_vec3(self) -> Vec3 {
-        Vec3::from_array(self.get_normal3d())
+        Self::NORMALS[self as usize]
     }
 
     #[inline]
     // bad code final boss
     // i don't know how to deal with the dark magic of rust macros so this is what is gonna be
-    pub fn get_uvs(self, block: Block) -> [[f32; 2]; 4] {
+    pub fn get_uvs(self, block: Block) -> [Vec2; 4] {
         let face_idx = match (block.direction, self) {
             (Direction::Top, Direction::Top) => 0.0,
             (Direction::Top, Direction::Bottom) => 2.0,
@@ -568,10 +563,10 @@ impl Direction {
             (block.kind as u32 - 1) as f32 / ATLAS_SIZE_Y,
         );
 
-        let top_left = [pos.x, pos.y];
-        let top_right = [pos.x + 1.0 / ATLAS_SIZE_X, pos.y];
-        let bottom_right = [pos.x + 1.0 / ATLAS_SIZE_X, pos.y + 1.0 / ATLAS_SIZE_Y];
-        let bottom_left = [pos.x, pos.y + 1.0 / ATLAS_SIZE_Y];
+        let top_left = vec2(pos.x, pos.y);
+        let top_right = vec2(pos.x + 1.0 / ATLAS_SIZE_X, pos.y);
+        let bottom_right = vec2(pos.x + 1.0 / ATLAS_SIZE_X, pos.y + 1.0 / ATLAS_SIZE_Y);
+        let bottom_left = vec2(pos.x, pos.y + 1.0 / ATLAS_SIZE_Y);
 
         let default = [bottom_left, top_left, top_right, bottom_right];
         let rotate_90 = [bottom_right, bottom_left, top_left, top_right];
