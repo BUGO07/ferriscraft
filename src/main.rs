@@ -17,10 +17,13 @@ use bevy::{
     },
     image::{ImageFilterMode, ImageSamplerDescriptor},
     input::{common_conditions::input_just_pressed, mouse::MouseWheel},
+    pbr::wireframe::{WireframeConfig, WireframePlugin},
     prelude::*,
     render::{
+        RenderPlugin,
         diagnostic::RenderDiagnosticsPlugin,
         primitives::Aabb,
+        settings::{RenderCreation, WgpuFeatures, WgpuSettings},
         view::screenshot::{Screenshot, save_to_disk},
     },
     window::{PresentMode, PrimaryWindow, WindowMode},
@@ -83,7 +86,15 @@ fn main() {
                     // for messing with shaders without restarting the game
                     watch_for_changes_override: Some(true),
                     ..default()
+                })
+                .set(RenderPlugin {
+                    render_creation: RenderCreation::Automatic(WgpuSettings {
+                        features: WgpuFeatures::POLYGON_MODE_LINE,
+                        ..default()
+                    }),
+                    ..default()
                 }),
+            WireframePlugin::default(),
             FrameTimeDiagnosticsPlugin::default(),
             EntityCountDiagnosticsPlugin,
             RenderDiagnosticsPlugin,
@@ -91,12 +102,10 @@ fn main() {
             FramepacePlugin,
             PerfUiPlugin,
             EguiPlugin::default(),
-            WorldInspectorPlugin::default().run_if(
-                |perf_ui: Single<&Visibility, With<PerfUiEntryFPS>>| *perf_ui != Visibility::Hidden,
-            ),
-            ResourceInspectorPlugin::<GameSettings>::default().run_if(
-                |perf_ui: Single<&Visibility, With<PerfUiEntryFPS>>| *perf_ui != Visibility::Hidden,
-            ),
+            WorldInspectorPlugin::default()
+                .run_if(|game_settings: Res<GameSettings>| game_settings.paused),
+            ResourceInspectorPlugin::<GameSettings>::default()
+                .run_if(|game_settings: Res<GameSettings>| game_settings.paused),
         ))
         .add_plugins((WorldPlugin, PlayerPlugin, RenderPipelinePlugin))
         .init_resource::<GameInfo>()
@@ -173,13 +182,13 @@ fn setup(
     mut materials: ResMut<Assets<VoxelMaterial>>,
     mut window: Single<&mut Window, With<PrimaryWindow>>,
     mut game_info: ResMut<GameInfo>,
-    persistent_saved_chunks: Res<Persistent<SavedWorld>>,
+    persistent_world: Res<Persistent<SavedWorld>>,
     asset_server: Res<AssetServer>,
 ) {
-    let seed = persistent_saved_chunks.0;
+    let &SavedWorld(seed, player_pos, ref saved_chunks) = persistent_world.get();
 
     game_info.seed = seed;
-    game_info.saved_chunks = Arc::new(RwLock::new(persistent_saved_chunks.1.clone()));
+    game_info.saved_chunks = Arc::new(RwLock::new(saved_chunks.clone()));
     game_info.materials.push(materials.add(VoxelMaterial {
         color_texture: Some(asset_server.load("atlas.ktx2")),
     }));
@@ -208,7 +217,11 @@ fn setup(
 
     let player = commands
         .spawn((
-            Transform::from_xyz(0.0, 1.0 + terrain_noise(Vec2::ZERO, seed).0 as f32, 0.0),
+            Transform::from_translation(if player_pos == Vec3::INFINITY {
+                vec3(0.0, 1.0 + terrain_noise(Vec2::ZERO, seed).0 as f32, 0.0)
+            } else {
+                player_pos
+            }),
             Aabb::from_min_max(vec3(-0.25, 0.0, -0.25), vec3(0.25, 1.8, 0.25)),
             Player,
             Velocity::default(),
@@ -218,9 +231,10 @@ fn setup(
 
     commands.spawn((
         Camera3d::default(),
-        PlayerCamera,
+        Msaa::Off,
         PostProcessSettings::default(),
         Transform::from_xyz(0.0, 1.62, -0.05).looking_at(Vec3::ZERO, Vec3::Y), // minecraft way
+        PlayerCamera,
         ChildOf(player),
     ));
 
@@ -249,6 +263,7 @@ fn update(
     mut mouse_scroll: EventReader<MouseWheel>,
     mut game_settings: ResMut<GameSettings>,
     mut camera: Single<(&Transform, &mut Projection, &mut PostProcessSettings)>,
+    mut wireframe_config: ResMut<WireframeConfig>,
     player: Single<&Transform, With<Player>>,
     game_entities: Query<(Entity, &GameEntity)>,
     chunks: Query<(Entity, &Transform), With<ChunkMarker>>,
@@ -262,7 +277,8 @@ fn update(
                     .update(|sc| {
                         let saved_chunks = game_info.saved_chunks.read().unwrap();
                         sc.0 = game_info.seed;
-                        sc.1 = saved_chunks.clone()
+                        sc.1 = player.translation;
+                        sc.2 = saved_chunks.clone();
                     })
                     .unwrap();
             }
@@ -288,6 +304,9 @@ fn update(
                 if camera.2.sss > 8 {
                     camera.2.sss = 0;
                 }
+            }
+            KeyCode::F8 => {
+                wireframe_config.global = !wireframe_config.global;
             }
             KeyCode::F11 => {
                 primary_window.mode = if primary_window.mode == WindowMode::Windowed {
