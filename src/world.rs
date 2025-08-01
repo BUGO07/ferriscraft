@@ -31,7 +31,7 @@ impl Plugin for WorldPlugin {
                 .name("saved world")
                 .format(StorageFormat::Bincode)
                 .path(Path::new("saves").join("world.ferris"))
-                .default(SavedWorld(rand::random(), HashMap::new()))
+                .default(SavedWorld(rand::random(), Vec3::INFINITY, HashMap::new()))
                 .build()
                 .unwrap(),
         )
@@ -66,7 +66,7 @@ pub struct SavedChunk {
 }
 
 #[derive(Resource, Clone, Default, Serialize, Deserialize)]
-pub struct SavedWorld(pub u32, pub HashMap<IVec3, SavedChunk>);
+pub struct SavedWorld(pub u32, pub Vec3, pub HashMap<IVec3, SavedChunk>);
 
 #[derive(Component, Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Block {

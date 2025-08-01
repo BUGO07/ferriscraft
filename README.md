@@ -27,13 +27,14 @@
 `LMB/RMB` - place/break blocks\
 `1-9/ScrollWheel+-` - switch blocks\
 `C` - zoom\
-`f1` save game\
-`f2` screenshot\
-`f3` debug menus\
-`f4` toggle hitboxes\
-`f6` chunk borders\
-`f7` super secret settings\
-`f11` toggle fullscreen
+`F1` save game\
+`F2` screenshot\
+`F3` debug menus\
+`F4` toggle hitboxes\
+`F6` chunk borders\
+`F7` super secret settings\
+`F8` toggle wireframe\
+`F11` toggle fullscreen
 
 ## TODO
 
