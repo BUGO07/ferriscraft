@@ -4,70 +4,108 @@ use bevy::prelude::*;
 
 use crate::{
     CHUNK_HEIGHT, CHUNK_SIZE,
-    utils::{
-        Direction, Quad, generate_block_at, generate_indices, index_to_vec3, make_vertex_u32,
-        vec3_to_index,
-    },
+    utils::{Direction, Quad, generate_block_at, index_to_vec3, vec3_to_index},
     world::{Block, Chunk},
 };
 
 #[derive(Default)]
 pub struct ChunkMesh {
+    pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
-    pub vertices: Vec<u32>,
-    pub uvs: Vec<Vec2>,
 }
 
-fn push_face(mesh: &mut ChunkMesh, dir: Direction, vpos: IVec3, block: Block) {
-    let quad = Quad::from_direction(dir, vpos, IVec3::ONE);
-
-    for (i, corner) in quad.corners.into_iter().enumerate() {
-        mesh.vertices
-            .push(make_vertex_u32(IVec3::from_array(corner), dir, block.kind));
-
-        mesh.uvs.push(dir.get_uvs(block)[i]);
-    }
+pub struct Vertex {
+    pub pos: Vec3,
+    pub normal: Direction,
+    pub uv: Vec2,
 }
 
-pub fn build_chunk_mesh(
-    chunks_refs: &Chunk,
-    chunks: &HashMap<IVec3, Chunk>,
-    seed: u32,
-) -> Option<ChunkMesh> {
-    let mut mesh = ChunkMesh::default();
-    for i in 0..CHUNK_SIZE * CHUNK_HEIGHT * CHUNK_SIZE {
-        let local = index_to_vec3(i as usize);
-        let (current, back, left, down) = chunks_refs.get_adjacent_blocks(local, chunks, seed);
-        match !current.kind.is_air() {
-            true => {
-                if left.kind.is_air() {
-                    push_face(&mut mesh, Direction::Left, local, current);
+impl ChunkMesh {
+    pub fn build(
+        mut self,
+        chunk: &Chunk,
+        chunks: &HashMap<IVec3, Chunk>,
+        seed: u32,
+    ) -> Option<Self> {
+        for i in 0..CHUNK_SIZE * CHUNK_HEIGHT * CHUNK_SIZE {
+            let local = index_to_vec3(i as usize).as_vec3();
+            let (current, back, left, down) =
+                chunk.get_adjacent_blocks(local.as_ivec3(), chunks, seed);
+            match !current.kind.is_air() {
+                true => {
+                    if left.kind.is_air() {
+                        self.push_face(Direction::Left, local, current);
+                    }
+                    if back.kind.is_air() {
+                        self.push_face(Direction::Back, local, current);
+                    }
+                    if down.kind.is_air() {
+                        self.push_face(Direction::Bottom, local, current);
+                    }
                 }
-                if back.kind.is_air() {
-                    push_face(&mut mesh, Direction::Back, local, current);
-                }
-                if down.kind.is_air() {
-                    push_face(&mut mesh, Direction::Bottom, local, current);
-                }
-            }
-            false => {
-                if !left.kind.is_air() {
-                    push_face(&mut mesh, Direction::Right, local, left);
-                }
-                if !back.kind.is_air() {
-                    push_face(&mut mesh, Direction::Front, local, back);
-                }
-                if !down.kind.is_air() {
-                    push_face(&mut mesh, Direction::Top, local, down);
+                false => {
+                    if !left.kind.is_air() {
+                        self.push_face(Direction::Right, local, left);
+                    }
+                    if !back.kind.is_air() {
+                        self.push_face(Direction::Front, local, back);
+                    }
+                    if !down.kind.is_air() {
+                        self.push_face(Direction::Top, local, down);
+                    }
                 }
             }
         }
+        if self.vertices.is_empty() {
+            None
+        } else {
+            let count = self.vertices.len() / 4;
+            let mut indices = Vec::with_capacity(count * 6);
+            indices.extend((0..count).flat_map(|i| {
+                let idx = i as u32 * 4;
+                [idx, idx + 1, idx + 2, idx, idx + 2, idx + 3]
+            }));
+            self.indices = indices;
+            Some(self)
+        }
     }
-    if mesh.vertices.is_empty() {
-        None
-    } else {
-        mesh.indices = generate_indices(mesh.vertices.len());
-        Some(mesh)
+
+    #[allow(clippy::vec_init_then_push)]
+    pub fn push_face(&mut self, dir: Direction, pos: Vec3, block: Block) {
+        let mut quads = Vec::new();
+
+        // * make it so stairs and other non-full blocks are possible
+        // if block.kind == BlockKind::Wood {
+        //     let mut quad = Quad::from_direction(
+        //         dir,
+        //         pos,
+        //         Vec3::ONE
+        //             - if matches!(dir, Direction::Top | Direction::Right | Direction::Front) {
+        //                 dir.as_vec3() / 2.0
+        //             } else {
+        //                 Vec3::ZERO
+        //             },
+        //     );
+
+        //     if matches!(dir, Direction::Top | Direction::Right | Direction::Front) {
+        //         quad.translate(-dir.as_vec3() / 2.0);
+        //     }
+
+        //     quads.push(quad);
+        // } else {
+        quads.push(Quad::from_direction(dir, pos, Vec3::ONE));
+        // }
+
+        let uvs = dir.get_uvs(block);
+        for quad in quads {
+            for (i, corner) in quad.corners.into_iter().enumerate() {
+                self.vertices.push(Vertex {
+                    pos: Vec3::from_array(corner),
+                    normal: dir,
+                    uv: uvs[i],
+                });
+            }
+        }
     }
 }
 

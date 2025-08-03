@@ -177,6 +177,9 @@ struct GameSettings {
 #[derive(Component)]
 struct HUDText;
 
+#[derive(Component)]
+struct HotbarBlock(u8);
+
 fn setup(
     mut commands: Commands,
     mut materials: ResMut<Assets<VoxelMaterial>>,
@@ -185,7 +188,8 @@ fn setup(
     persistent_world: Res<Persistent<SavedWorld>>,
     asset_server: Res<AssetServer>,
 ) {
-    let &SavedWorld(seed, player_pos, ref saved_chunks) = persistent_world.get();
+    let &SavedWorld(seed, (player_pos, player_yaw, player_pitch), ref saved_chunks) =
+        persistent_world.get();
 
     game_info.seed = seed;
     game_info.saved_chunks = Arc::new(RwLock::new(saved_chunks.clone()));
@@ -221,7 +225,8 @@ fn setup(
                 vec3(0.0, 1.0 + terrain_noise(Vec2::ZERO, seed).0 as f32, 0.0)
             } else {
                 player_pos
-            }),
+            })
+            .with_rotation(Quat::from_rotation_y(player_yaw)),
             Aabb::from_min_max(vec3(-0.25, 0.0, -0.25), vec3(0.25, 1.8, 0.25)),
             Player,
             Velocity::default(),
@@ -233,7 +238,7 @@ fn setup(
         Camera3d::default(),
         Msaa::Off,
         PostProcessSettings::default(),
-        Transform::from_xyz(0.0, 1.62, -0.05).looking_at(Vec3::ZERO, Vec3::Y), // minecraft way
+        Transform::from_xyz(0.0, 1.62, -0.05).with_rotation(Quat::from_rotation_x(player_pitch)), // minecraft way
         PlayerCamera,
         ChildOf(player),
     ));
@@ -243,27 +248,90 @@ fn setup(
             Node {
                 position_type: PositionType::Absolute,
                 padding: UiRect::all(Val::Px(5.0)),
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
                 ..default()
             },
             GlobalZIndex(i32::MAX),
         ))
         .id();
 
-    commands.spawn((Text::default(), HUDText, ChildOf(ui)));
+    commands.spawn((
+        Text::default(),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(5.0),
+            left: Val::Px(5.0),
+            ..default()
+        },
+        HUDText,
+        ChildOf(ui),
+    ));
+
+    let hotbar = commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                margin: UiRect::all(Val::Px(5.0)),
+                align_items: AlignItems::Center,
+                align_content: AlignContent::SpaceEvenly,
+                justify_content: JustifyContent::SpaceEvenly,
+                width: Val::Px(464.0),
+                height: Val::Px(56.0),
+                bottom: Val::Vh(2.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.8, 0.8, 0.8, 0.65)),
+            ChildOf(ui),
+        ))
+        .id();
+
+    let node = ImageNode::new(asset_server.load("atlas.png")).with_mode(NodeImageMode::Sliced(
+        TextureSlicer {
+            border: BorderRect::ZERO,
+            center_scale_mode: SliceScaleMode::Stretch,
+            sides_scale_mode: SliceScaleMode::Stretch,
+            max_corner_scale: 1.0,
+        },
+    ));
+
+    for i in 1..=10 {
+        if i == BlockKind::Water as u8 {
+            continue;
+        }
+
+        commands.spawn((
+            node.clone()
+                .with_rect(Rect::new(0.0, 16.0 * (i - 1) as f32, 16.0, 16.0 * i as f32)),
+            Node {
+                width: Val::Px(48.0),
+                height: Val::Px(48.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            HotbarBlock(i),
+            ChildOf(hotbar),
+        ));
+    }
 }
 
 fn update(
     mut commands: Commands,
     mut gizmos: Gizmos,
     mut game_info: ResMut<GameInfo>,
-    mut perf_ui: Query<&mut Visibility, With<PerfUiEntryFPS>>,
     mut coords_text: Single<&mut Text, With<HUDText>>,
     mut persistent_saved_chunks: ResMut<Persistent<SavedWorld>>,
     mut primary_window: Single<&mut Window, With<PrimaryWindow>>,
     mut mouse_scroll: EventReader<MouseWheel>,
     mut game_settings: ResMut<GameSettings>,
     mut camera: Single<(&Transform, &mut Projection, &mut PostProcessSettings)>,
-    mut wireframe_config: ResMut<WireframeConfig>,
+    (mut wireframe_config, mut hotbar_blocks): (
+        ResMut<WireframeConfig>,
+        Query<(&mut ImageNode, &HotbarBlock)>,
+    ),
+    perf_ui: Query<&mut Visibility, With<PerfUiEntryFPS>>,
     player: Single<&Transform, With<Player>>,
     game_entities: Query<(Entity, &GameEntity)>,
     chunks: Query<(Entity, &Transform), With<ChunkMarker>>,
@@ -277,7 +345,11 @@ fn update(
                     .update(|sc| {
                         let saved_chunks = game_info.saved_chunks.read().unwrap();
                         sc.0 = game_info.seed;
-                        sc.1 = player.translation;
+                        sc.1.0 = player.translation;
+                        let (_, pitch, _) = camera.0.rotation.to_euler(EulerRot::YXZ);
+                        let (yaw, _, _) = player.rotation.to_euler(EulerRot::YXZ);
+                        sc.1.1 = yaw;
+                        sc.1.2 = pitch;
                         sc.2 = saved_chunks.clone();
                     })
                     .unwrap();
@@ -328,6 +400,21 @@ fn update(
         }
     }
 
+    // let block_idx = (game_info.current_block as u8 - 1) as f32;
+
+    for (mut image, block) in hotbar_blocks.iter_mut() {
+        if block.0 == game_info.current_block as u8 {
+            image.image_mode = NodeImageMode::Sliced(TextureSlicer {
+                border: BorderRect::all(2.0),
+                ..default()
+            });
+            image.color = Color::srgb(0.8, 0.8, 0.8);
+        } else {
+            image.image_mode = NodeImageMode::Auto;
+            image.color = Color::WHITE;
+        }
+    }
+
     let fov = if keyboard.pressed(KeyCode::KeyC) {
         10.0
     } else {
@@ -340,7 +427,7 @@ fn update(
     });
 
     for ev in mouse_scroll.read() {
-        let dir = ev.y.signum();
+        let dir = -ev.y.signum();
         let mut next = game_info.current_block as i32 + dir as i32;
         if next == BlockKind::Water as i32 {
             next += dir as i32;
@@ -378,7 +465,7 @@ fn update(
         game_info.current_block
     );
 
-    for mut visibility in perf_ui.iter_mut() {
+    for mut visibility in perf_ui {
         *visibility = if game_settings.debug_menus {
             Visibility::Visible
         } else {
@@ -387,7 +474,7 @@ fn update(
     }
 
     if game_settings.hitboxes {
-        for (_, entity) in game_entities.iter() {
+        for (_, entity) in game_entities {
             let mut scale = vec3(1.0, 1.0, 1.0);
             if entity.kind == GameEntityKind::Ferris {
                 scale = vec3(1.0, 0.4, 1.0);
@@ -454,7 +541,7 @@ fn update(
     if let Some(hit) = ray_cast(
         &game_info,
         player.translation + camera.0.translation,
-        camera.0.forward().as_vec3(),
+        (player.rotation * camera.0.rotation * Vec3::NEG_Z).normalize_or_zero(),
         5.0,
     ) {
         let hit_global_position = hit.global_position;

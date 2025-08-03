@@ -32,47 +32,6 @@ pub fn index_to_vec3(index: usize) -> IVec3 {
 }
 
 #[inline]
-pub fn generate_indices(vertex_count: usize) -> Vec<u32> {
-    let indices_count = vertex_count / 4;
-    let mut indices = Vec::<u32>::with_capacity(indices_count * 6);
-    (0..indices_count).for_each(|vert_index| {
-        let vert_index = vert_index as u32 * 4u32;
-        indices.push(vert_index);
-        indices.push(vert_index + 1);
-        indices.push(vert_index + 2);
-        indices.push(vert_index);
-        indices.push(vert_index + 2);
-        indices.push(vert_index + 3);
-    });
-    indices
-}
-
-#[inline]
-pub fn make_vertex_u32(pos: IVec3, normal: Direction, block_type: BlockKind) -> u32 {
-    (pos.x as u32 & 0x3F)               // 6 bits for x (0-5)
-        | ((pos.y as u32 & 0x1FF) << 6) // 9 bits for y (6-14)
-        | ((pos.z as u32 & 0x3F) << 15) // 6 bits for z (15-20)
-        | ((normal as u32 & 0x7) << 21)        // 3 bits for normal (21-23)
-        | ((block_type as u32 & 0xFF) << 24) // 8 bits for block_type (24-31)
-}
-
-#[inline]
-// pos, normal, block_type
-pub fn get_vertex_u32(vertex: u32) -> (Vec3, Vec3, u32) {
-    let x = (vertex & 0x3F) as f32;
-    let y = ((vertex >> 6) & 0x1FF) as f32;
-    let z = ((vertex >> 15) & 0x3F) as f32;
-    let normal_index = (vertex >> 21) & 0x7;
-    let block_type = (vertex >> 24) & 0xFF;
-
-    (
-        vec3(x, y, z),
-        Direction::NORMALS[normal_index as usize],
-        block_type,
-    )
-}
-
-#[inline]
 pub fn aabb_collision(pos1: Vec3, size1: Vec3, pos2: Vec3, size2: Vec3) -> bool {
     let min1 = pos1;
     let max1 = pos1 + size1;
@@ -215,15 +174,12 @@ pub fn ferris_noise(pos: Vec2, seed: u32) -> f32 {
 
 #[inline]
 pub fn toggle_grab_cursor(window: &mut Window) {
-    match window.cursor_options.grab_mode {
-        CursorGrabMode::None => {
-            window.cursor_options.grab_mode = CursorGrabMode::Locked;
-            window.cursor_options.visible = false;
-        }
-        _ => {
-            window.cursor_options.grab_mode = CursorGrabMode::None;
-            window.cursor_options.visible = true;
-        }
+    if window.cursor_options.grab_mode == CursorGrabMode::None {
+        window.cursor_options.grab_mode = CursorGrabMode::Locked;
+        window.cursor_options.visible = false;
+    } else {
+        window.cursor_options.grab_mode = CursorGrabMode::None;
+        window.cursor_options.visible = true;
     }
 }
 
@@ -232,7 +188,7 @@ pub fn update_chunk(
     chunks: &Query<(Entity, &Transform), With<ChunkMarker>>,
     pos: IVec3,
 ) {
-    for (entity, transform) in chunks.iter() {
+    for (entity, transform) in chunks {
         if (transform.translation / CHUNK_SIZE as f32).as_ivec3() == pos {
             commands
                 .entity(entity)
@@ -254,7 +210,6 @@ pub fn place_block(
     match saved_chunks.entry(chunk.pos) {
         Entry::Vacant(e) => {
             e.insert(SavedChunk {
-                pos: chunk.pos,
                 blocks: HashMap::from([(pos, block)]),
                 entities: chunk.entities.clone(),
             });
@@ -298,9 +253,9 @@ pub fn ray_cast(
 
     let mut current_block_pos = ray_origin.floor();
 
-    let step_x = if ray_direction.x >= 0.0 { 1 } else { -1 };
-    let step_y = if ray_direction.y >= 0.0 { 1 } else { -1 };
-    let step_z = if ray_direction.z >= 0.0 { 1 } else { -1 };
+    let step_x = ray_direction.x.signum();
+    let step_y = ray_direction.y.signum();
+    let step_z = ray_direction.z.signum();
 
     let t_delta_x = if ray_direction.x == 0.0 {
         f32::INFINITY
@@ -350,31 +305,31 @@ pub fn ray_cast(
 
     while current_distance <= max_distance {
         if t_max_x < t_max_y && t_max_x < t_max_z {
-            current_block_pos.x += step_x as f32;
+            current_block_pos.x += step_x;
             current_distance = t_max_x;
             t_max_x += t_delta_x;
-            normal = if step_x > 0 {
-                Direction::Left
-            } else {
+            normal = if step_x.is_sign_negative() {
                 Direction::Right
+            } else {
+                Direction::Left
             };
         } else if t_max_y < t_max_z {
-            current_block_pos.y += step_y as f32;
+            current_block_pos.y += step_y;
             current_distance = t_max_y;
             t_max_y += t_delta_y;
-            normal = if step_y > 0 {
-                Direction::Bottom
-            } else {
+            normal = if step_y.is_sign_negative() {
                 Direction::Top
+            } else {
+                Direction::Bottom
             };
         } else {
-            current_block_pos.z += step_z as f32;
+            current_block_pos.z += step_z;
             current_distance = t_max_z;
             t_max_z += t_delta_z;
-            normal = if step_z > 0 {
-                Direction::Back
-            } else {
+            normal = if step_z.is_sign_negative() {
                 Direction::Front
+            } else {
+                Direction::Back
             };
         }
 
@@ -395,9 +350,7 @@ pub fn ray_cast(
         )
         .as_ivec3();
 
-        let chunks_guard = game_info.chunks.read().unwrap();
-
-        if let Some(chunk) = chunks_guard.get(&chunk_pos) {
+        if let Some(chunk) = game_info.chunks.read().unwrap().get(&chunk_pos) {
             let block_index = vec3_to_index(local_block_pos);
 
             if block_index < chunk.blocks.len() && (0..CHUNK_HEIGHT).contains(&local_block_pos.y) {
@@ -531,80 +484,64 @@ impl Direction {
     }
 
     #[inline]
-    // bad code final boss
-    // i don't know how to deal with the dark magic of rust macros so this is what is gonna be
-    pub fn get_uvs(self, block: Block) -> [Vec2; 4] {
-        let face_idx = match (block.direction, self) {
-            (Direction::Top, Direction::Top) => 0.0,
-            (Direction::Top, Direction::Bottom) => 2.0,
-            (Direction::Top, _) => 1.0,
-            (Direction::Bottom, Direction::Bottom) => 0.0,
-            (Direction::Bottom, Direction::Top) => 2.0,
-            (Direction::Bottom, _) => 1.0,
-            (Direction::Left, Direction::Left) => 0.0,
-            (Direction::Left, Direction::Right) => 2.0,
-            (Direction::Left, _) => 1.0,
-            (Direction::Right, Direction::Right) => 0.0,
-            (Direction::Right, Direction::Left) => 2.0,
-            (Direction::Right, _) => 1.0,
-            (Direction::Back, Direction::Back) => 0.0,
-            (Direction::Back, Direction::Front) => 2.0,
-            (Direction::Back, _) => 1.0,
-            (Direction::Front, Direction::Front) => 0.0,
-            (Direction::Front, Direction::Back) => 2.0,
-            (Direction::Front, _) => 1.0,
-        };
+    pub fn get_opposite(self) -> Self {
+        match self {
+            Direction::Left => Direction::Right,
+            Direction::Right => Direction::Left,
+            Direction::Bottom => Direction::Top,
+            Direction::Top => Direction::Bottom,
+            Direction::Back => Direction::Front,
+            Direction::Front => Direction::Back,
+        }
+    }
 
+    #[inline]
+    pub fn get_uvs(self, block: Block) -> [Vec2; 4] {
         const ATLAS_SIZE_X: f32 = 3.0;
         const ATLAS_SIZE_Y: f32 = 10.0;
+
+        let face_idx = match self {
+            d if d == block.direction => 0.0,
+            d if d == block.direction.get_opposite() => 2.0,
+            _ => 1.0,
+        };
 
         let pos = vec2(
             face_idx / ATLAS_SIZE_X,
             (block.kind as u32 - 1) as f32 / ATLAS_SIZE_Y,
         );
 
-        let top_left = vec2(pos.x, pos.y);
-        let top_right = vec2(pos.x + 1.0 / ATLAS_SIZE_X, pos.y);
-        let bottom_right = vec2(pos.x + 1.0 / ATLAS_SIZE_X, pos.y + 1.0 / ATLAS_SIZE_Y);
-        let bottom_left = vec2(pos.x, pos.y + 1.0 / ATLAS_SIZE_Y);
-
-        let default = [bottom_left, top_left, top_right, bottom_right];
-        let rotate_90 = [bottom_right, bottom_left, top_left, top_right];
-        let rotate_180 = [top_right, bottom_right, bottom_left, top_left];
-        let rotate_270 = [top_left, top_right, bottom_right, bottom_left];
+        let base = [
+            vec2(pos.x, pos.y + 1.0 / ATLAS_SIZE_Y),
+            vec2(pos.x, pos.y),
+            vec2(pos.x + 1.0 / ATLAS_SIZE_X, pos.y),
+            vec2(pos.x + 1.0 / ATLAS_SIZE_X, pos.y + 1.0 / ATLAS_SIZE_Y),
+        ];
+        let rotate_90 = [base[3], base[0], base[1], base[2]];
+        let rotate_180 = [base[2], base[3], base[0], base[1]];
+        let rotate_270 = [base[1], base[2], base[3], base[0]];
 
         // HOLY BAD CODE
-        match block.direction {
-            Direction::Top => match self {
-                Direction::Front | Direction::Back => default,
-                Direction::Left => rotate_90,
-                _ => rotate_270,
-            },
-            Direction::Bottom => match self {
-                Direction::Front | Direction::Back => rotate_180,
-                Direction::Left => rotate_270,
-                _ => rotate_90,
-            },
-            Direction::Right => match self {
-                Direction::Top | Direction::Bottom => default,
-                Direction::Back => rotate_90,
-                _ => rotate_270,
-            },
-            Direction::Left => match self {
-                Direction::Top | Direction::Bottom => rotate_180,
-                Direction::Back => rotate_270,
-                _ => rotate_90,
-            },
-            Direction::Front => match self {
-                Direction::Right | Direction::Left => default,
-                Direction::Bottom => rotate_90,
-                _ => rotate_270,
-            },
-            Direction::Back => match self {
-                Direction::Right | Direction::Left => rotate_180,
-                Direction::Bottom => rotate_270,
-                _ => rotate_90,
-            },
+        use Direction::*;
+        match (block.direction, self) {
+            (Right, Top | Bottom) => base,
+            (Right, Back) => rotate_90,
+            (Right, _) => rotate_270,
+            (Top, Front | Back) => base,
+            (Top, Left) => rotate_90,
+            (Top, _) => rotate_270,
+            (Front, Right | Left) => base,
+            (Front, Bottom) => rotate_90,
+            (Front, _) => rotate_270,
+            (Left, Top | Bottom) => rotate_180,
+            (Left, Back) => rotate_270,
+            (Left, _) => rotate_90,
+            (Bottom, Front | Back) => rotate_180,
+            (Bottom, Left) => rotate_270,
+            (Bottom, _) => rotate_90,
+            (Back, Right | Left) => rotate_180,
+            (Back, Bottom) => rotate_270,
+            (Back, _) => rotate_90,
         }
     }
 }
@@ -653,14 +590,12 @@ pub fn generate_block_at(pos: IVec3, seed: u32) -> Block {
 }
 
 pub struct Quad {
-    pub _direction: Direction,
-    pub corners: [[i32; 3]; 4],
+    pub corners: [[f32; 3]; 4],
 }
 
 impl Quad {
     #[inline]
-    // TODO make water be smaller than 1x1x1
-    pub fn from_direction(direction: Direction, pos: IVec3, size: IVec3) -> Self {
+    pub fn from_direction(direction: Direction, pos: Vec3, size: Vec3) -> Self {
         let corners = match direction {
             Direction::Left => [
                 [pos.x, pos.y, pos.z],
@@ -700,9 +635,14 @@ impl Quad {
             ],
         };
 
-        Self {
-            corners,
-            _direction: direction,
+        Self { corners }
+    }
+
+    pub fn _translate(&mut self, offset: Vec3) {
+        for corner in &mut self.corners {
+            corner[0] += offset.x;
+            corner[1] += offset.y;
+            corner[2] += offset.z;
         }
     }
 }

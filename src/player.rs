@@ -40,26 +40,26 @@ pub struct Player;
 pub struct PlayerCamera;
 
 fn camera_movement(
-    mut camera: Single<&mut Transform, With<PlayerCamera>>,
+    mut camera: Single<&mut Transform, (With<PlayerCamera>, Without<Player>)>,
+    mut player: Single<&mut Transform, (With<Player>, Without<PlayerCamera>)>,
     mut mouse: EventReader<MouseMotion>,
     settings: Res<GameSettings>,
     window: Single<&Window, With<PrimaryWindow>>,
 ) {
     for ev in mouse.read() {
-        let (mut yaw, mut pitch, _) = camera.rotation.to_euler(EulerRot::YXZ);
-        match window.cursor_options.grab_mode {
-            CursorGrabMode::None => (),
-            _ => {
-                let window_scale = window.height().min(window.width());
-                pitch -= (settings.sensitivity * ev.delta.y * window_scale / 10_000.0).to_radians();
-                yaw -= (settings.sensitivity * ev.delta.x * window_scale / 10_000.0).to_radians();
-            }
+        let (_, mut pitch, _) = camera.rotation.to_euler(EulerRot::YXZ);
+        let (mut yaw, _, _) = player.rotation.to_euler(EulerRot::YXZ);
+
+        if window.cursor_options.grab_mode != CursorGrabMode::None {
+            let window_scale = window.height().min(window.width());
+            pitch -= (settings.sensitivity * ev.delta.y * window_scale / 10_000.0).to_radians();
+            yaw -= (settings.sensitivity * ev.delta.x * window_scale / 10_000.0).to_radians();
         }
 
         pitch = pitch.clamp(-1.54, 1.54);
 
-        camera.rotation =
-            Quat::from_axis_angle(Vec3::Y, yaw) * Quat::from_axis_angle(Vec3::X, pitch);
+        camera.rotation = Quat::from_axis_angle(Vec3::X, pitch);
+        player.rotation = Quat::from_axis_angle(Vec3::Y, yaw);
     }
 }
 
@@ -67,8 +67,7 @@ fn camera_movement(
 pub struct Velocity(pub Vec3);
 
 fn player_movement(
-    player: Single<(&mut Transform, &mut Velocity), (With<Player>, Without<PlayerCamera>)>,
-    camera: Single<&Transform, (With<PlayerCamera>, Without<Player>)>,
+    player: Single<(&mut Transform, &mut Velocity), With<Player>>,
     keyboard: Res<ButtonInput<KeyCode>>,
     settings: Res<GameSettings>,
     game_info: Res<GameInfo>,
@@ -81,7 +80,7 @@ fn player_movement(
     let mut move_dir = Vec3::ZERO;
     let mut sprint_multiplier = 1.0;
 
-    let local_z = camera.local_z();
+    let local_z = transform.local_z();
 
     let forward = -Vec3::new(local_z.x, 0., local_z.z).normalize_or_zero();
     let right = Vec3::new(local_z.z, 0., -local_z.x).normalize_or_zero();
