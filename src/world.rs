@@ -19,10 +19,7 @@ use crate::{
     CHUNK_HEIGHT, CHUNK_SIZE, GameInfo, GameSettings, SEA_LEVEL,
     mesher::ChunkMesh,
     player::Player,
-    utils::{
-        Direction, TREE_OBJECT, ferris_noise, generate_block_at, terrain_noise, tree_noise,
-        vec3_to_index,
-    },
+    utils::{Direction, TREE_OBJECT, generate_block_at, noise, terrain_noise, vec3_to_index},
 };
 
 pub struct WorldPlugin;
@@ -115,10 +112,10 @@ pub enum GameEntityKind {
 }
 
 #[derive(Component)]
-struct ComputeChunk(Task<Chunk>, u32);
+struct ComputeChunk(Task<Chunk>, IVec3);
 
 #[derive(Component)]
-struct ComputeChunkMesh(Task<Option<ChunkMesh>>, u32);
+struct ComputeChunkMesh(Task<Option<ChunkMesh>>, IVec3);
 
 fn handle_chunk_gen(
     mut commands: Commands,
@@ -129,6 +126,7 @@ fn handle_chunk_gen(
     let pt = player.translation;
     let thread_pool = AsyncComputeTaskPool::get();
     let render_distance = game_settings.render_distance;
+    let noises = game_info.noises;
 
     for chunk_z in
         (pt.z as i32 / CHUNK_SIZE - render_distance)..(pt.z as i32 / CHUNK_SIZE + render_distance)
@@ -158,9 +156,9 @@ fn handle_chunk_gen(
                 game_info.loading_chunks.write().unwrap().insert(pos);
             }
 
-            let seed = game_info.seed;
             let chunks = game_info.chunks.clone();
             let saved_chunks = game_info.saved_chunks.clone();
+
             let task = thread_pool.spawn(async move {
                 let mut chunk = Chunk::new(pos);
 
@@ -170,16 +168,16 @@ fn handle_chunk_gen(
                             (rela_x + pos.x * CHUNK_SIZE) as f32,
                             (rela_z + pos.z * CHUNK_SIZE) as f32,
                         );
-                        let (max_y, biome) = terrain_noise(pos, seed);
+                        let (max_y, biome) = terrain_noise(pos, &noises);
 
                         for y in 0..CHUNK_HEIGHT {
                             chunk.blocks[vec3_to_index(ivec3(rela_x, y, rela_z))] =
-                                generate_block_at(ivec3(pos.x as i32, y, pos.y as i32), seed);
+                                generate_block_at(ivec3(pos.x as i32, y, pos.y as i32), max_y);
 
                             if y == max_y
                                 && max_y > SEA_LEVEL
                                 && biome < 0.4
-                                && ferris_noise(pos, seed) > 0.85
+                                && noise(noises.ferris, pos) > 0.85
                             {
                                 chunk.entities.push((
                                     Entity::PLACEHOLDER,
@@ -192,7 +190,7 @@ fn handle_chunk_gen(
                             }
                         }
 
-                        let tree_probabilty = tree_noise(pos, seed);
+                        let tree_probabilty = noise(noises.tree, pos);
 
                         // TODO: clean up
                         if tree_probabilty > 0.85 && max_y < 90 && max_y > SEA_LEVEL + 2 {
@@ -202,7 +200,7 @@ fn handle_chunk_gen(
                                         let mut pos = ivec3(3 + x as i32, y as i32, 3 + z as i32);
                                         let (local_max_y, _) = terrain_noise(
                                             (chunk.pos * CHUNK_SIZE + pos).as_vec3().xz(),
-                                            seed,
+                                            &noises,
                                         );
 
                                         pos.y += local_max_y;
@@ -238,17 +236,13 @@ fn handle_chunk_gen(
                 }
                 chunk
             });
-            commands.spawn(ComputeChunk(
-                task,
-                pos.distance_squared(pt.as_ivec3().with_y(0) / CHUNK_SIZE) as u32,
-            ));
+            commands.spawn(ComputeChunk(task, pos));
         }
     }
 }
 
 fn handle_mesh_gen(
     mut commands: Commands,
-    player: Single<&Transform, With<Player>>,
     game_info: Res<GameInfo>,
     query: Query<(Entity, &Transform), Added<ChunkMarker>>,
 ) {
@@ -258,19 +252,16 @@ fn handle_mesh_gen(
         let pos = transform.translation.as_ivec3() / CHUNK_SIZE;
 
         let chunks = game_info.chunks.clone();
-        let seed = game_info.seed;
+        let noises = game_info.noises;
 
         let task = thread_pool.spawn(async move {
             let guard = chunks.read().unwrap();
-            ChunkMesh::default().build(guard.get(&pos)?, &guard, seed)
+            ChunkMesh::default().build(guard.get(&pos)?, &guard, &noises)
         });
 
-        commands.entity(entity).try_insert(ComputeChunkMesh(
-            task,
-            (transform.translation.as_ivec3() / CHUNK_SIZE)
-                .distance_squared(player.translation.as_ivec3().with_y(0) / CHUNK_SIZE)
-                as u32,
-        ));
+        commands
+            .entity(entity)
+            .try_insert(ComputeChunkMesh(task, pos));
     }
 }
 
@@ -318,6 +309,7 @@ fn handle_chunk_despawn(
 fn process_tasks(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
+    player: Single<&Transform, With<Player>>,
     mesh_tasks: Query<(Entity, &mut ComputeChunkMesh)>,
     spawn_tasks: Query<(Entity, &mut ComputeChunk)>,
     game_info: Res<GameInfo>,
@@ -325,7 +317,10 @@ fn process_tasks(
     // GENERATING CHUNKS
 
     let mut tasks = spawn_tasks.into_iter().collect::<Vec<_>>();
-    tasks.sort_by(|(_, first), (_, second)| first.1.cmp(&second.1)); // should matter but i dont think it does.
+    let pt = player.translation.as_ivec3().with_y(0) / CHUNK_SIZE;
+    tasks.sort_by(|(_, first), (_, second)| {
+        (first.1.distance_squared(pt)).cmp(&second.1.distance_squared(pt))
+    }); // should matter but i dont think it does.
 
     let mut processed_this_frame = 0;
     for (entity, mut compute_task) in tasks {
@@ -383,7 +378,12 @@ fn process_tasks(
     // GENERATING MESHES
 
     let mut tasks = mesh_tasks.into_iter().collect::<Vec<_>>();
-    tasks.sort_by(|(_, first), (_, second)| first.1.cmp(&second.1));
+    tasks.sort_by(|(_, first), (_, second)| {
+        first
+            .1
+            .distance_squared(pt)
+            .cmp(&second.1.distance_squared(pt))
+    });
 
     let mut processed_this_frame = 0;
     for (entity, mut compute_task) in tasks {

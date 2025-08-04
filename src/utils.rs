@@ -1,14 +1,9 @@
 use std::collections::{HashMap, hash_map::Entry};
 
 use bevy::{prelude::*, window::CursorGrabMode};
-use bevy_inspector_egui::egui::lerp;
 use noiz::{
     Noise, NoiseFunction, SampleableFor,
-    prelude::{
-        FractalLayers, Normed, Persistence,
-        common_noise::{Fbm, Perlin, Simplex},
-    },
-    rng::NoiseRng,
+    prelude::common_noise::{Fbm, Perlin, Simplex},
 };
 use serde::{Deserialize, Serialize};
 
@@ -47,129 +42,62 @@ pub fn aabb_collision(pos1: Vec3, size1: Vec3, pos2: Vec3, size2: Vec3) -> bool 
         && max1.z > min2.z
 }
 
+#[derive(Default, Clone, Copy)]
+pub struct NoiseFunctions {
+    pub terrain: Noise<Fbm<Simplex>>,
+    pub biome: Noise<Fbm<Simplex>>,
+    pub ferris: Noise<Perlin>,
+    pub tree: Noise<Perlin>,
+}
+
 #[inline]
 pub fn noise<T: NoiseFunction<Vec2, Output = f32>>(noise: Noise<T>, pos: Vec2) -> f32 {
     let n: f32 = noise.sample(pos);
     (n + 1.0) / 2.0
 }
 
+const OCEAN_MIN_HEIGHT: f32 = SEA_LEVEL as f32 - 40.0;
+const OCEAN_MAX_HEIGHT: f32 = SEA_LEVEL as f32 + 5.0;
+const OCEAN_FLATTENING_EXPONENT: f32 = 4.0;
+const PLAINS_MIN_HEIGHT: f32 = SEA_LEVEL as f32 + 10.0;
+const PLAINS_MAX_HEIGHT: f32 = SEA_LEVEL as f32 + 40.0;
+const PLAINS_FLATTENING_EXPONENT: f32 = 3.0;
+const MOUNTAIN_MIN_HEIGHT: f32 = SEA_LEVEL as f32 + 50.0;
+const MOUNTAIN_MAX_HEIGHT: f32 = SEA_LEVEL as f32 + 180.0;
+const MOUNTAIN_FLATTENING_EXPONENT: f32 = 1.5;
+const OCEAN_PLAINS_THRESHOLD: f32 = 0.4;
+const PLAINS_MOUNTAIN_THRESHOLD: f32 = 0.6;
+
 #[inline]
 // max_y, biome
-pub fn terrain_noise(pos: Vec2, seed: u32) -> (i32, f32) {
-    const FBM_OCTAVES: u32 = 4;
-    const FBM_PERSISTENCE: f32 = 0.5;
-    const FBM_LACUNARITY: f32 = 2.0;
-    const FBM_BASE_FREQUENCY: f32 = 0.00200;
+pub fn terrain_noise(pos: Vec2, noises: &NoiseFunctions) -> (i32, f32) {
+    let terrain_fbm = noise(noises.terrain, pos);
+    let biome_fbm = noise(noises.biome, pos);
 
-    const FBM_BIOME_FREQUENCY: f32 = 0.0001;
-    const BIOME_OCTAVES: u32 = 3;
-    const BIOME_PERSISTENCE: f32 = 0.6;
+    let min_height: f32;
+    let max_height: f32;
+    let flattening_exp: f32;
 
-    const OCEAN_MIN_HEIGHT: f32 = SEA_LEVEL as f32 - 40.0;
-    const OCEAN_MAX_HEIGHT: f32 = SEA_LEVEL as f32 + 5.0;
-    const OCEAN_FLATTENING_EXPONENT: f32 = 4.0;
-
-    const PLAINS_MIN_HEIGHT: f32 = SEA_LEVEL as f32 + 10.0;
-    const PLAINS_MAX_HEIGHT: f32 = SEA_LEVEL as f32 + 40.0;
-    const PLAINS_FLATTENING_EXPONENT: f32 = 3.0;
-
-    const MOUNTAIN_MIN_HEIGHT: f32 = SEA_LEVEL as f32 + 50.0;
-    const MOUNTAIN_MAX_HEIGHT: f32 = SEA_LEVEL as f32 + 180.0;
-    const MOUNTAIN_FLATTENING_EXPONENT: f32 = 1.5;
-
-    const OCEAN_PLAINS_THRESHOLD: f32 = 0.4;
-    const PLAINS_MOUNTAIN_THRESHOLD: f32 = 0.6;
-
-    let fbm_noise_generator = Noise {
-        noise: Fbm::<Simplex>::new(
-            Normed::default(),
-            Persistence(FBM_PERSISTENCE),
-            FractalLayers {
-                amount: FBM_OCTAVES,
-                lacunarity: FBM_LACUNARITY,
-                ..Default::default()
-            },
-        ),
-        frequency: FBM_BASE_FREQUENCY,
-        seed: NoiseRng(seed),
-    };
-
-    let raw_fbm_value: f32 = fbm_noise_generator.sample(pos);
-
-    let normalized_fbm_value = (raw_fbm_value + 1.0) / 2.0;
-
-    let biome_noise_generator = Noise {
-        noise: Fbm::<Simplex>::new(
-            Normed::default(),
-            Persistence(BIOME_PERSISTENCE),
-            FractalLayers {
-                amount: BIOME_OCTAVES,
-                lacunarity: FBM_LACUNARITY,
-                ..Default::default()
-            },
-        ),
-        frequency: FBM_BIOME_FREQUENCY,
-        seed: NoiseRng(seed + 1),
-    };
-
-    let raw_biome_value: f32 = biome_noise_generator.sample(pos);
-    let normalized_biome_value = (raw_biome_value + 1.0) / 2.0;
-
-    let current_min_height: f32;
-    let current_max_height: f32;
-    let current_flattening_exponent: f32;
-
-    if normalized_biome_value < OCEAN_PLAINS_THRESHOLD {
-        let t = normalized_biome_value / OCEAN_PLAINS_THRESHOLD;
-        current_min_height = lerp(OCEAN_MIN_HEIGHT..=PLAINS_MIN_HEIGHT, t);
-        current_max_height = lerp(OCEAN_MAX_HEIGHT..=PLAINS_MAX_HEIGHT, t);
-        current_flattening_exponent =
-            lerp(OCEAN_FLATTENING_EXPONENT..=PLAINS_FLATTENING_EXPONENT, t);
-    } else if normalized_biome_value < PLAINS_MOUNTAIN_THRESHOLD {
-        let t = (normalized_biome_value - OCEAN_PLAINS_THRESHOLD)
+    if biome_fbm < OCEAN_PLAINS_THRESHOLD {
+        let t = biome_fbm / OCEAN_PLAINS_THRESHOLD;
+        min_height = OCEAN_MIN_HEIGHT.lerp(PLAINS_MIN_HEIGHT, t);
+        max_height = OCEAN_MAX_HEIGHT.lerp(PLAINS_MAX_HEIGHT, t);
+        flattening_exp = OCEAN_FLATTENING_EXPONENT.lerp(PLAINS_FLATTENING_EXPONENT, t);
+    } else if biome_fbm < PLAINS_MOUNTAIN_THRESHOLD {
+        let t = (biome_fbm - OCEAN_PLAINS_THRESHOLD)
             / (PLAINS_MOUNTAIN_THRESHOLD - OCEAN_PLAINS_THRESHOLD);
-        current_min_height = lerp(PLAINS_MIN_HEIGHT..=MOUNTAIN_MIN_HEIGHT, t);
-        current_max_height = lerp(PLAINS_MAX_HEIGHT..=MOUNTAIN_MAX_HEIGHT, t);
-        current_flattening_exponent =
-            lerp(PLAINS_FLATTENING_EXPONENT..=MOUNTAIN_FLATTENING_EXPONENT, t);
+        min_height = PLAINS_MIN_HEIGHT.lerp(MOUNTAIN_MIN_HEIGHT, t);
+        max_height = PLAINS_MAX_HEIGHT.lerp(MOUNTAIN_MAX_HEIGHT, t);
+        flattening_exp = PLAINS_FLATTENING_EXPONENT.lerp(MOUNTAIN_FLATTENING_EXPONENT, t);
     } else {
-        current_min_height = MOUNTAIN_MIN_HEIGHT;
-        current_max_height = MOUNTAIN_MAX_HEIGHT;
-        current_flattening_exponent = MOUNTAIN_FLATTENING_EXPONENT;
+        min_height = MOUNTAIN_MIN_HEIGHT;
+        max_height = MOUNTAIN_MAX_HEIGHT;
+        flattening_exp = MOUNTAIN_FLATTENING_EXPONENT;
     }
 
-    let biased_noise = normalized_fbm_value.powf(current_flattening_exponent);
+    let height = min_height + terrain_fbm.powf(flattening_exp) * (max_height - min_height);
 
-    let height_range = current_max_height - current_min_height;
-
-    (
-        (current_min_height + (biased_noise * height_range)) as i32,
-        normalized_biome_value,
-    )
-}
-
-#[inline]
-pub fn tree_noise(pos: Vec2, seed: u32) -> f32 {
-    noise(
-        Noise {
-            noise: Perlin::default(),
-            frequency: 0.069,
-            seed: NoiseRng(seed),
-        },
-        pos,
-    )
-}
-
-#[inline]
-pub fn ferris_noise(pos: Vec2, seed: u32) -> f32 {
-    noise(
-        Noise {
-            noise: Perlin::default(),
-            frequency: 0.42,
-            seed: NoiseRng(seed),
-        },
-        pos,
-    )
+    (height as i32, biome_fbm)
 }
 
 #[inline]
@@ -547,9 +475,7 @@ impl Direction {
 }
 
 #[inline]
-pub fn generate_block_at(pos: IVec3, seed: u32) -> Block {
-    let (max_y, _) = terrain_noise(pos.xz().as_vec2(), seed);
-
+pub fn generate_block_at(pos: IVec3, max_y: i32) -> Block {
     let y = pos.y;
     if y == 0 {
         Block::BEDROCK

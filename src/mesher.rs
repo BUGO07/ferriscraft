@@ -4,7 +4,10 @@ use bevy::prelude::*;
 
 use crate::{
     CHUNK_HEIGHT, CHUNK_SIZE,
-    utils::{Direction, Quad, generate_block_at, index_to_vec3, vec3_to_index},
+    utils::{
+        Direction, NoiseFunctions, Quad, generate_block_at, index_to_vec3, terrain_noise,
+        vec3_to_index,
+    },
     world::{Block, Chunk},
 };
 
@@ -25,12 +28,12 @@ impl ChunkMesh {
         mut self,
         chunk: &Chunk,
         chunks: &HashMap<IVec3, Chunk>,
-        seed: u32,
+        noises: &NoiseFunctions,
     ) -> Option<Self> {
         for i in 0..CHUNK_SIZE * CHUNK_HEIGHT * CHUNK_SIZE {
             let local = index_to_vec3(i as usize).as_vec3();
             let (current, back, left, down) =
-                chunk.get_adjacent_blocks(local.as_ivec3(), chunks, seed);
+                chunk.get_adjacent_blocks(local.as_ivec3(), chunks, noises);
             match !current.kind.is_air() {
                 true => {
                     if left.kind.is_air() {
@@ -154,7 +157,7 @@ impl Chunk {
         &self,
         pos: IVec3,
         chunks: &HashMap<IVec3, Chunk>,
-        seed: u32,
+        noise_functions: &NoiseFunctions,
         // current, back, left, down
     ) -> (Block, Block, Block, Block) {
         let current = self.get_block(pos);
@@ -189,7 +192,8 @@ impl Chunk {
             if let Some(chunk) = chunks.get(&chunk_pos) {
                 chunk.blocks[vec3_to_index(ivec3(x, y, z))]
             } else {
-                generate_block_at(chunk_pos * CHUNK_SIZE + ivec3(x, y, z), seed)
+                let pos = chunk_pos * CHUNK_SIZE + ivec3(x, y, z);
+                generate_block_at(pos, terrain_noise(pos.xz().as_vec2(), noise_functions).0)
             }
         };
 

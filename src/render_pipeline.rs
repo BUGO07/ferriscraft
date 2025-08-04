@@ -25,25 +25,26 @@ use bevy::{
     },
 };
 
-#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
-pub struct VoxelMaterial {
-    #[texture(1)]
-    #[sampler(2)]
-    pub color_texture: Option<Handle<Image>>,
-}
+// * unused right now
+// #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+// pub struct VoxelMaterial {
+//     #[texture(1)]
+//     #[sampler(2)]
+//     pub color_texture: Option<Handle<Image>>,
+// }
 
-impl Material for VoxelMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "shaders/voxel.wgsl".into()
-    }
-}
+// impl Material for VoxelMaterial {
+//     fn fragment_shader() -> ShaderRef {
+//         "shaders/voxel.wgsl".into()
+//     }
+// }
 
 pub struct RenderPipelinePlugin;
 
 impl Plugin for RenderPipelinePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
-            MaterialPlugin::<VoxelMaterial>::default(),
+            // MaterialPlugin::<VoxelMaterial>::default(),
             ExtractComponentPlugin::<PostProcessSettings>::default(),
             UniformComponentPlugin::<PostProcessSettings>::default(),
         ));
@@ -181,7 +182,7 @@ impl FromWorld for PostProcessPipeline {
 
                         entry_point: "fragment".into(),
                         targets: vec![Some(ColorTargetState {
-                            format: TextureFormat::bevy_default(),
+                            format: TextureFormat::Rgba16Float,
                             blend: None,
                             write_mask: ColorWrites::ALL,
                         })],
