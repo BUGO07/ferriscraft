@@ -11,6 +11,7 @@ use std::{
 };
 
 use bevy::{
+    core_pipeline::{Skybox, bloom::Bloom, tonemapping::Tonemapping},
     diagnostic::{
         EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin,
         SystemInformationDiagnosticsPlugin,
@@ -38,12 +39,21 @@ use iyes_perf_ui::{
     PerfUiPlugin,
     prelude::{PerfUiAllEntries, PerfUiEntryFPS},
 };
+use noiz::{
+    Noise,
+    prelude::{
+        FractalLayers, Normed, Persistence,
+        common_noise::{Fbm, Perlin, Simplex},
+    },
+    rng::NoiseRng,
+};
 
 use crate::{
     player::{Player, PlayerCamera, PlayerPlugin, Velocity},
-    render_pipeline::{PostProcessSettings, RenderPipelinePlugin, VoxelMaterial},
+    render_pipeline::{PostProcessSettings, RenderPipelinePlugin},
     utils::{
-        aabb_collision, place_block, ray_cast, terrain_noise, toggle_grab_cursor, vec3_to_index,
+        NoiseFunctions, aabb_collision, place_block, ray_cast, terrain_noise, toggle_grab_cursor,
+        vec3_to_index,
     },
     world::{
         Block, BlockKind, Chunk, ChunkMarker, GameEntity, GameEntityKind, SavedChunk, SavedWorld,
@@ -150,12 +160,12 @@ const SEA_LEVEL: i32 = 64; // MAX CHUNK_HEIGHT - 180
 
 #[derive(Resource, Default)]
 struct GameInfo {
-    seed: u32,
     chunks: Arc<RwLock<HashMap<IVec3, Chunk>>>,
     loading_chunks: Arc<RwLock<HashSet<IVec3>>>,
     saved_chunks: Arc<RwLock<HashMap<IVec3, SavedChunk>>>,
-    materials: Vec<Handle<VoxelMaterial>>,
+    materials: Vec<Handle<StandardMaterial>>,
     models: Vec<Handle<Scene>>,
+    noises: NoiseFunctions,
     current_block: BlockKind,
 }
 
@@ -182,7 +192,7 @@ struct HotbarBlock(u8);
 
 fn setup(
     mut commands: Commands,
-    mut materials: ResMut<Assets<VoxelMaterial>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     mut window: Single<&mut Window, With<PrimaryWindow>>,
     mut game_info: ResMut<GameInfo>,
     persistent_world: Res<Persistent<SavedWorld>>,
@@ -191,10 +201,50 @@ fn setup(
     let &SavedWorld(seed, (player_pos, player_yaw, player_pitch), ref saved_chunks) =
         persistent_world.get();
 
-    game_info.seed = seed;
+    game_info.noises = NoiseFunctions {
+        terrain: Noise {
+            noise: Fbm::<Simplex>::new(
+                Normed::default(),
+                Persistence(0.5),
+                FractalLayers {
+                    amount: 4,
+                    lacunarity: 2.0,
+                    ..Default::default()
+                },
+            ),
+            frequency: 0.00200,
+            seed: NoiseRng(seed),
+        },
+        biome: Noise {
+            noise: Fbm::<Simplex>::new(
+                Normed::default(),
+                Persistence(0.6),
+                FractalLayers {
+                    amount: 3,
+                    lacunarity: 2.0,
+                    ..Default::default()
+                },
+            ),
+            frequency: 0.0001,
+            seed: NoiseRng(seed + 1),
+        },
+        tree: Noise {
+            noise: Perlin::default(),
+            frequency: 0.069,
+            seed: NoiseRng(seed),
+        },
+        ferris: Noise {
+            noise: Perlin::default(),
+            frequency: 0.42,
+            seed: NoiseRng(seed),
+        },
+    };
+
     game_info.saved_chunks = Arc::new(RwLock::new(saved_chunks.clone()));
-    game_info.materials.push(materials.add(VoxelMaterial {
-        color_texture: Some(asset_server.load("atlas.ktx2")),
+    game_info.materials.push(materials.add(StandardMaterial {
+        base_color_texture: Some(asset_server.load("atlas.ktx2")),
+        reflectance: 0.0,
+        ..default()
     }));
     game_info
         .models
@@ -205,6 +255,7 @@ fn setup(
 
     commands.spawn(PerfUiAllEntries::default());
 
+    // godray lights when?
     commands.spawn((
         DirectionalLight {
             illuminance: 5_000.0,
@@ -222,7 +273,11 @@ fn setup(
     let player = commands
         .spawn((
             Transform::from_translation(if player_pos == Vec3::INFINITY {
-                vec3(0.0, 1.0 + terrain_noise(Vec2::ZERO, seed).0 as f32, 0.0)
+                vec3(
+                    0.0,
+                    1.0 + terrain_noise(Vec2::ZERO, &game_info.noises).0 as f32,
+                    0.0,
+                )
             } else {
                 player_pos
             })
@@ -236,8 +291,19 @@ fn setup(
 
     commands.spawn((
         Camera3d::default(),
+        Camera {
+            hdr: true,
+            ..default()
+        },
         Msaa::Off,
         PostProcessSettings::default(),
+        Skybox {
+            image: asset_server.load("skybox.ktx2"),
+            brightness: 1000.0,
+            ..default()
+        },
+        Bloom::NATURAL,
+        Tonemapping::TonyMcMapface,
         Transform::from_xyz(0.0, 1.62, -0.05).with_rotation(Quat::from_rotation_x(player_pitch)), // minecraft way
         PlayerCamera,
         ChildOf(player),
@@ -344,7 +410,6 @@ fn update(
                 persistent_saved_chunks
                     .update(|sc| {
                         let saved_chunks = game_info.saved_chunks.read().unwrap();
-                        sc.0 = game_info.seed;
                         sc.1.0 = player.translation;
                         let (_, pitch, _) = camera.0.rotation.to_euler(EulerRot::YXZ);
                         let (yaw, _, _) = player.rotation.to_euler(EulerRot::YXZ);
@@ -440,7 +505,7 @@ fn update(
         game_info.current_block = BlockKind::from_u32(next as u32);
     }
 
-    let (_, biome) = terrain_noise(player.translation.xz(), game_info.seed);
+    let (_, biome) = terrain_noise(player.translation.xz(), &game_info.noises);
     coords_text.0 = format!(
         "Coord: {:.02}\nBlock: {}\nChunk: {}\nBiome: {}\nIn Hand: {:?}",
         player.translation,
