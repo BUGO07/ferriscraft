@@ -1,14 +1,27 @@
-use crate::{GameInfo, GameSettings, PausableSystems, utils::ray_cast};
+use crate::{
+    CHUNK_HEIGHT, CHUNK_SIZE, GameInfo, GameSettings, PausableSystems,
+    render_pipeline::PostProcessSettings,
+    utils::{aabb_collision, ray_cast, vec3_to_index},
+    world::{
+        Block, ChunkMarker, SavedWorld,
+        utils::{NoiseFunctions, place_block, terrain_noise},
+    },
+};
 use bevy::{
+    core_pipeline::{Skybox, bloom::Bloom, tonemapping::Tonemapping},
     input::mouse::MouseMotion,
     prelude::*,
+    render::primitives::Aabb,
     window::{CursorGrabMode, PrimaryWindow},
 };
+use bevy_persistent::Persistent;
+use serde::{Deserialize, Serialize};
 
 pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
+        app.add_systems(Startup, setup);
         app.add_systems(
             Update,
             (
@@ -27,17 +40,135 @@ impl Plugin for PlayerPlugin {
                     },
                 ),
                 camera_movement,
+                handle_interactions,
             )
                 .in_set(PausableSystems),
         );
     }
 }
 
-#[derive(Component)]
-pub struct Player;
+#[derive(Component, Default, Serialize, Deserialize, Clone, Copy)]
+pub struct Player {
+    pub velocity: Vec3,
+}
 
 #[derive(Component)]
 pub struct PlayerCamera;
+
+fn setup(
+    mut commands: Commands,
+    persistent_world: Res<Persistent<SavedWorld>>,
+    asset_server: Res<AssetServer>,
+    game_info: Res<GameInfo>,
+) {
+    let &SavedWorld(_, (player_pos, player_velocity, player_yaw, player_pitch), _) =
+        persistent_world.get();
+
+    let player = commands
+        .spawn(player_bundle(
+            player_pos,
+            player_velocity,
+            player_yaw,
+            &game_info.noises,
+        ))
+        .id();
+
+    commands.spawn(camera_bundle(
+        asset_server.load("skybox.ktx2"),
+        player,
+        player_pitch,
+    ));
+}
+
+fn handle_interactions(
+    mut commands: Commands,
+    mut gizmos: Gizmos,
+    game_info: Res<GameInfo>,
+    player: Single<&Transform, (With<Player>, Without<PlayerCamera>)>,
+    camera: Single<&Transform, (With<PlayerCamera>, Without<Player>)>,
+    chunks: Query<(Entity, &Transform), With<ChunkMarker>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+) {
+    if let Some(hit) = ray_cast(
+        &game_info,
+        player.translation + camera.translation,
+        (player.rotation * camera.rotation * Vec3::NEG_Z).normalize_or_zero(),
+        5.0,
+    ) {
+        let hit_global_position = hit.global_position;
+        let mut local_pos = hit.local_pos;
+        let mut chunk_pos = hit.chunk_pos;
+
+        gizmos.cuboid(
+            Transform::from_translation(hit_global_position.as_vec3() + Vec3::splat(0.5)),
+            Color::srgb(1.0, 0.0, 0.0),
+        );
+
+        if mouse.just_pressed(MouseButton::Left) {
+            if let Some(chunk) = game_info.chunks.write().unwrap().get_mut(&chunk_pos) {
+                place_block(
+                    &mut commands,
+                    &mut game_info.saved_chunks.write().unwrap(),
+                    chunk,
+                    &chunks,
+                    local_pos,
+                    Block::AIR,
+                );
+            }
+        } else if mouse.just_pressed(MouseButton::Right) {
+            local_pos += hit.normal.as_vec3().as_ivec3();
+
+            if local_pos.y >= 0 && local_pos.y < CHUNK_HEIGHT - 1 {
+                if local_pos.x < 0 {
+                    local_pos.x += CHUNK_SIZE;
+                    chunk_pos.x -= 1;
+                } else if local_pos.x >= CHUNK_SIZE {
+                    local_pos.x -= CHUNK_SIZE;
+                    chunk_pos.x += 1;
+                }
+
+                if local_pos.z < 0 {
+                    local_pos.z += CHUNK_SIZE;
+                    chunk_pos.z -= 1;
+                } else if local_pos.z >= CHUNK_SIZE {
+                    local_pos.z -= CHUNK_SIZE;
+                    chunk_pos.z += 1;
+                }
+
+                if aabb_collision(
+                    player.translation,
+                    vec3(0.25, 1.8, 0.25),
+                    hit_global_position.as_vec3() + hit.normal.as_vec3(),
+                    Vec3::ONE,
+                ) {
+                    return;
+                }
+
+                if let Some(chunk) = game_info.chunks.write().unwrap().get_mut(&chunk_pos) {
+                    if chunk.blocks[vec3_to_index(local_pos)] == Block::AIR {
+                        place_block(
+                            &mut commands,
+                            &mut game_info.saved_chunks.write().unwrap(),
+                            chunk,
+                            &chunks,
+                            local_pos,
+                            Block {
+                                kind: game_info.current_block,
+                                direction: if game_info.current_block.can_rotate() {
+                                    hit.normal
+                                } else {
+                                    Default::default()
+                                },
+                            },
+                        );
+                    }
+                } else {
+                    warn!("placing in a chunk that doesn't exist {:?}", chunk_pos);
+                }
+            }
+        }
+    }
+}
 
 fn camera_movement(
     mut camera: Single<&mut Transform, (With<PlayerCamera>, Without<Player>)>,
@@ -63,17 +194,14 @@ fn camera_movement(
     }
 }
 
-#[derive(Component, Debug, Default)]
-pub struct Velocity(pub Vec3);
-
 fn player_movement(
-    player: Single<(&mut Transform, &mut Velocity), With<Player>>,
+    player: Single<(&mut Transform, &mut Player)>,
     keyboard: Res<ButtonInput<KeyCode>>,
     settings: Res<GameSettings>,
     game_info: Res<GameInfo>,
     time: Res<Time>,
 ) {
-    let (mut transform, mut velocity) = player.into_inner();
+    let (mut transform, mut player) = player.into_inner();
 
     let delta = time.delta_secs();
 
@@ -172,8 +300,8 @@ fn player_movement(
         }
     }
 
-    velocity.0.x = target_velocity.x;
-    velocity.0.z = target_velocity.z;
+    player.velocity.x = target_velocity.x;
+    player.velocity.z = target_velocity.z;
 
     let mut grounded = false;
     let mut closest_ground_distance = f32::MAX;
@@ -214,20 +342,66 @@ fn player_movement(
                 }
             }
             if hit {
-                velocity.0.y = settings.jump_force / 4.0;
+                player.velocity.y = settings.jump_force / 4.0;
             } else {
-                velocity.0.y = settings.jump_force;
+                player.velocity.y = settings.jump_force;
             }
         } else {
-            velocity.0.y = 0.0;
+            player.velocity.y = 0.0;
         }
 
-        if velocity.0.y <= 0.0 && closest_ground_distance > 0.0 && closest_ground_distance < 0.1 {
+        if player.velocity.y <= 0.0
+            && closest_ground_distance > 0.0
+            && closest_ground_distance < 0.1
+        {
             transform.translation.y -= closest_ground_distance - 0.1;
         }
     } else {
-        velocity.0.y -= settings.gravity * delta;
+        player.velocity.y -= settings.gravity * delta;
     }
 
-    transform.translation += velocity.0 * delta;
+    transform.translation += player.velocity * delta;
+}
+
+fn player_bundle(
+    player_pos: Vec3,
+    player_velocity: Vec3,
+    player_yaw: f32,
+    noises: &NoiseFunctions,
+) -> impl Bundle {
+    (
+        Transform::from_translation(if player_pos == Vec3::INFINITY {
+            vec3(0.0, 1.0 + terrain_noise(Vec2::ZERO, noises).0 as f32, 0.0)
+        } else {
+            player_pos
+        })
+        .with_rotation(Quat::from_rotation_y(player_yaw)),
+        Aabb::from_min_max(vec3(-0.25, 0.0, -0.25), vec3(0.25, 1.8, 0.25)),
+        Player {
+            velocity: player_velocity,
+        },
+        Visibility::Visible,
+    )
+}
+
+fn camera_bundle(skybox: Handle<Image>, player: Entity, pitch: f32) -> impl Bundle {
+    (
+        Camera3d::default(),
+        Camera {
+            hdr: true,
+            ..default()
+        },
+        Msaa::Off,
+        PostProcessSettings::default(),
+        Skybox {
+            image: skybox,
+            brightness: 1000.0,
+            ..default()
+        },
+        Bloom::NATURAL,
+        Tonemapping::TonyMcMapface,
+        Transform::from_xyz(0.0, 1.62, -0.05).with_rotation(Quat::from_rotation_x(pitch)), // minecraft way
+        PlayerCamera,
+        ChildOf(player),
+    )
 }

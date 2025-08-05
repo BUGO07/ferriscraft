@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::{
     CHUNK_HEIGHT, CHUNK_SIZE,
-    utils::{
-        Direction, NoiseFunctions, Quad, generate_block_at, index_to_vec3, terrain_noise,
-        vec3_to_index,
+    utils::{index_to_vec3, vec3_to_index},
+    world::{
+        Block, Chunk,
+        utils::{Direction, NoiseFunctions, Quad, generate_block_at, terrain_noise},
     },
-    world::{Block, Chunk},
 };
 
 #[derive(Default)]
@@ -30,35 +31,64 @@ impl ChunkMesh {
         chunks: &HashMap<IVec3, Chunk>,
         noises: &NoiseFunctions,
     ) -> Option<Self> {
-        for i in 0..CHUNK_SIZE * CHUNK_HEIGHT * CHUNK_SIZE {
-            let local = index_to_vec3(i as usize).as_vec3();
-            let (current, back, left, down) =
-                chunk.get_adjacent_blocks(local.as_ivec3(), chunks, noises);
-            match !current.kind.is_air() {
-                true => {
+        let chunk_pos = chunk.pos;
+
+        let left_chunk = chunks.get(&(chunk_pos + IVec3::new(-1, 0, 0)));
+        let back_chunk = chunks.get(&(chunk_pos + IVec3::new(0, 0, -1)));
+        let down_chunk = chunks.get(&(chunk_pos + IVec3::new(0, -1, 0)));
+
+        // parallelized (thanks rayon)
+        let mesh_parts: Vec<ChunkMesh> = (0..CHUNK_SIZE * CHUNK_HEIGHT * CHUNK_SIZE)
+            .into_par_iter()
+            .filter_map(|i| {
+                let mut local_mesh = ChunkMesh::default();
+
+                let local = index_to_vec3(i as usize).as_vec3();
+                let current = chunk.blocks[vec3_to_index(local.as_ivec3())];
+
+                let (back, left, down) = chunk.get_adjacent_blocks(
+                    local.as_ivec3(),
+                    left_chunk,
+                    back_chunk,
+                    down_chunk,
+                    noises,
+                );
+
+                if !current.kind.is_air() {
                     if left.kind.is_air() {
-                        self.push_face(Direction::Left, local, current);
+                        local_mesh.push_face(Direction::Left, local, current);
                     }
                     if back.kind.is_air() {
-                        self.push_face(Direction::Back, local, current);
+                        local_mesh.push_face(Direction::Back, local, current);
                     }
                     if down.kind.is_air() {
-                        self.push_face(Direction::Bottom, local, current);
+                        local_mesh.push_face(Direction::Bottom, local, current);
                     }
-                }
-                false => {
+                } else {
                     if !left.kind.is_air() {
-                        self.push_face(Direction::Right, local, left);
+                        local_mesh.push_face(Direction::Right, local, left);
                     }
                     if !back.kind.is_air() {
-                        self.push_face(Direction::Front, local, back);
+                        local_mesh.push_face(Direction::Front, local, back);
                     }
                     if !down.kind.is_air() {
-                        self.push_face(Direction::Top, local, down);
+                        local_mesh.push_face(Direction::Top, local, down);
                     }
                 }
-            }
+
+                if local_mesh.vertices.is_empty() {
+                    None
+                } else {
+                    Some(local_mesh)
+                }
+            })
+            .collect();
+
+        for mesh in mesh_parts {
+            self.vertices.extend(mesh.vertices);
+            self.indices.extend(mesh.indices);
         }
+
         if self.vertices.is_empty() {
             None
         } else {
@@ -75,8 +105,6 @@ impl ChunkMesh {
 
     #[allow(clippy::vec_init_then_push)]
     pub fn push_face(&mut self, dir: Direction, pos: Vec3, block: Block) {
-        let mut quads = Vec::new();
-
         // * make it so stairs and other non-full blocks are possible
         // if block.kind == BlockKind::Wood {
         //     let mut quad = Quad::from_direction(
@@ -96,18 +124,19 @@ impl ChunkMesh {
 
         //     quads.push(quad);
         // } else {
-        quads.push(Quad::from_direction(dir, pos, Vec3::ONE));
         // }
 
         let uvs = dir.get_uvs(block);
-        for quad in quads {
-            for (i, corner) in quad.corners.into_iter().enumerate() {
-                self.vertices.push(Vertex {
-                    pos: Vec3::from_array(corner),
-                    normal: dir,
-                    uv: uvs[i],
-                });
-            }
+        for (i, corner) in Quad::from_direction(dir, pos, Vec3::ONE)
+            .corners
+            .into_iter()
+            .enumerate()
+        {
+            self.vertices.push(Vertex {
+                pos: Vec3::from_array(corner),
+                normal: dir,
+                uv: uvs[i],
+            });
         }
     }
 }
@@ -129,8 +158,6 @@ impl Chunk {
         }
     }
 
-    // takes relative block position
-    // returns chunk pos
     pub fn get_relative_chunk(&self, pos: IVec3) -> Option<IVec3> {
         if !(0..CHUNK_HEIGHT).contains(&pos.y) {
             return None;
@@ -156,50 +183,57 @@ impl Chunk {
     pub fn get_adjacent_blocks(
         &self,
         pos: IVec3,
-        chunks: &HashMap<IVec3, Chunk>,
-        noise_functions: &NoiseFunctions,
-        // current, back, left, down
-    ) -> (Block, Block, Block, Block) {
-        let current = self.get_block(pos);
-
-        let get_block = |pos: IVec3| -> Block {
-            let mut x = pos.x;
-            let y = pos.y;
-            let mut z = pos.z;
+        left_chunk: Option<&Chunk>,
+        back_chunk: Option<&Chunk>,
+        down_chunk: Option<&Chunk>,
+        noises: &NoiseFunctions,
+    ) -> (Block, Block, Block) {
+        let get_block = |offset: IVec3, fallback: Option<&Chunk>| -> Block {
+            let new_pos = pos + offset;
+            let x = new_pos.x;
+            let y = new_pos.y;
+            let z = new_pos.z;
 
             if !(0..CHUNK_HEIGHT).contains(&y) {
                 return Block::AIR;
             }
 
+            if (0..CHUNK_SIZE).contains(&x) && (0..CHUNK_SIZE).contains(&z) {
+                return *self.get_block(new_pos);
+            }
+
             let mut chunk_pos = self.pos;
+            let mut local_x = x;
+            let mut local_z = z;
 
             if x < 0 {
-                x += CHUNK_SIZE;
+                local_x += CHUNK_SIZE;
                 chunk_pos.x -= 1;
             } else if x >= CHUNK_SIZE {
-                x -= CHUNK_SIZE;
+                local_x -= CHUNK_SIZE;
                 chunk_pos.x += 1;
             }
 
             if z < 0 {
-                z += CHUNK_SIZE;
+                local_z += CHUNK_SIZE;
                 chunk_pos.z -= 1;
             } else if z >= CHUNK_SIZE {
-                z -= CHUNK_SIZE;
+                local_z -= CHUNK_SIZE;
                 chunk_pos.z += 1;
             }
 
-            if let Some(chunk) = chunks.get(&chunk_pos) {
-                chunk.blocks[vec3_to_index(ivec3(x, y, z))]
+            if let Some(chunk) = fallback {
+                chunk.blocks[vec3_to_index(IVec3::new(local_x, y, local_z))]
             } else {
-                let pos = chunk_pos * CHUNK_SIZE + ivec3(x, y, z);
-                generate_block_at(pos, terrain_noise(pos.xz().as_vec2(), noise_functions).0)
+                let world_pos = chunk_pos * CHUNK_SIZE + IVec3::new(local_x, y, local_z);
+                generate_block_at(world_pos, terrain_noise(world_pos.xz().as_vec2(), noises).0)
             }
         };
 
-        let back = get_block(pos + ivec3(0, 0, -1));
-        let left = get_block(pos + ivec3(-1, 0, 0));
-        let down = get_block(pos + ivec3(0, -1, 0));
-        (*current, back, left, down)
+        let back = get_block(IVec3::new(0, 0, -1), back_chunk);
+        let left = get_block(IVec3::new(-1, 0, 0), left_chunk);
+        let down = get_block(IVec3::new(0, -1, 0), down_chunk);
+
+        (back, left, down)
     }
 }
