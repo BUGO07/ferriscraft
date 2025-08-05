@@ -1,7 +1,9 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 #![allow(
     clippy::too_many_arguments,
     clippy::type_complexity,
-    clippy::match_like_matches_macro
+    clippy::match_like_matches_macro,
+    clippy::vec_init_then_push
 )]
 
 use std::{
@@ -11,34 +13,19 @@ use std::{
 };
 
 use bevy::{
-    core_pipeline::{Skybox, bloom::Bloom, tonemapping::Tonemapping},
-    diagnostic::{
-        EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin,
-        SystemInformationDiagnosticsPlugin,
-    },
     image::{ImageFilterMode, ImageSamplerDescriptor},
-    input::{common_conditions::input_just_pressed, mouse::MouseWheel},
-    pbr::wireframe::{WireframeConfig, WireframePlugin},
+    input::common_conditions::input_just_pressed,
+    pbr::wireframe::WireframeConfig,
     prelude::*,
     render::{
         RenderPlugin,
-        diagnostic::RenderDiagnosticsPlugin,
-        primitives::Aabb,
         settings::{RenderCreation, WgpuFeatures, WgpuSettings},
         view::screenshot::{Screenshot, save_to_disk},
     },
-    window::{PresentMode, PrimaryWindow, WindowMode},
+    window::{ExitCondition, PresentMode, PrimaryWindow, WindowMode},
 };
 use bevy_framepace::FramepacePlugin;
-use bevy_inspector_egui::{
-    bevy_egui::EguiPlugin,
-    quick::{ResourceInspectorPlugin, WorldInspectorPlugin},
-};
 use bevy_persistent::Persistent;
-use iyes_perf_ui::{
-    PerfUiPlugin,
-    prelude::{PerfUiAllEntries, PerfUiEntryFPS},
-};
 use noiz::{
     Noise,
     prelude::{
@@ -49,21 +36,19 @@ use noiz::{
 };
 
 use crate::{
-    player::{Player, PlayerCamera, PlayerPlugin, Velocity},
+    player::{Player, PlayerCamera, PlayerPlugin},
     render_pipeline::{PostProcessSettings, RenderPipelinePlugin},
-    utils::{
-        NoiseFunctions, aabb_collision, place_block, ray_cast, terrain_noise, toggle_grab_cursor,
-        vec3_to_index,
-    },
+    ui::UIPlugin,
+    utils::toggle_grab_cursor,
     world::{
-        Block, BlockKind, Chunk, ChunkMarker, GameEntity, GameEntityKind, SavedChunk, SavedWorld,
-        WorldPlugin,
+        BlockKind, Chunk, GameEntity, GameEntityKind, SavedChunk, SavedWorld, WorldPlugin,
+        utils::{NoiseFunctions, save_game},
     },
 };
 
-mod mesher;
 mod player;
 mod render_pipeline;
+mod ui;
 mod utils;
 mod world;
 
@@ -81,6 +66,7 @@ fn main() {
                         present_mode: PresentMode::AutoNoVsync,
                         ..default()
                     }),
+                    exit_condition: ExitCondition::DontExit,
                     ..default()
                 })
                 .set(ImagePlugin {
@@ -104,28 +90,18 @@ fn main() {
                     }),
                     ..default()
                 }),
-            WireframePlugin::default(),
-            FrameTimeDiagnosticsPlugin::default(),
-            EntityCountDiagnosticsPlugin,
-            RenderDiagnosticsPlugin,
-            SystemInformationDiagnosticsPlugin,
             FramepacePlugin,
-            PerfUiPlugin,
-            EguiPlugin::default(),
-            WorldInspectorPlugin::default()
-                .run_if(|game_settings: Res<GameSettings>| game_settings.paused),
-            ResourceInspectorPlugin::<GameSettings>::default()
-                .run_if(|game_settings: Res<GameSettings>| game_settings.paused),
         ))
-        .add_plugins((WorldPlugin, PlayerPlugin, RenderPipelinePlugin))
+        .add_plugins((WorldPlugin, PlayerPlugin, UIPlugin, RenderPipelinePlugin))
         .init_resource::<GameInfo>()
         .insert_resource(GameSettings {
+            render_distance: 16,
             movement_speed: 3.0,
+            jump_force: 7.7,
             sensitivity: 1.2,
             fov: 60,
-            render_distance: 16,
             gravity: 23.31,
-            jump_force: 7.7,
+            autosave: true,
             despawn_chunks: true,
             #[cfg(debug_assertions)]
             debug_menus: true,
@@ -140,7 +116,6 @@ fn main() {
             PausableSystems.run_if(|settings: Res<GameSettings>| !settings.paused),
         )
         .add_systems(Startup, setup)
-        .add_systems(Update, update.in_set(PausableSystems))
         // toggle pause
         .add_systems(
             Update,
@@ -150,6 +125,10 @@ fn main() {
                 toggle_grab_cursor(&mut window);
             })
             .run_if(input_just_pressed(KeyCode::Escape)),
+        )
+        .add_systems(
+            Update,
+            (handle_keybinds, handle_gizmos).in_set(PausableSystems),
         )
         .run();
 }
@@ -171,12 +150,13 @@ struct GameInfo {
 
 #[derive(Reflect, Resource, Default)]
 struct GameSettings {
-    movement_speed: f32,
-    sensitivity: f32,
     render_distance: i32,
+    movement_speed: f32,
+    jump_force: f32,
+    sensitivity: f32,
     fov: u32,
     gravity: f32,
-    jump_force: f32,
+    autosave: bool,
     despawn_chunks: bool,
     debug_menus: bool,
     hitboxes: bool,
@@ -184,76 +164,71 @@ struct GameSettings {
     paused: bool,
 }
 
-#[derive(Component)]
-struct HUDText;
-
-#[derive(Component)]
-struct HotbarBlock(u8);
-
 fn setup(
     mut commands: Commands,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut window: Single<&mut Window, With<PrimaryWindow>>,
-    mut game_info: ResMut<GameInfo>,
     persistent_world: Res<Persistent<SavedWorld>>,
     asset_server: Res<AssetServer>,
 ) {
-    let &SavedWorld(seed, (player_pos, player_yaw, player_pitch), ref saved_chunks) =
-        persistent_world.get();
+    let &SavedWorld(seed, _, ref saved_chunks) = persistent_world.get();
 
-    game_info.noises = NoiseFunctions {
-        terrain: Noise {
-            noise: Fbm::<Simplex>::new(
-                Normed::default(),
-                Persistence(0.5),
-                FractalLayers {
-                    amount: 4,
-                    lacunarity: 2.0,
-                    ..Default::default()
-                },
-            ),
-            frequency: 0.00200,
-            seed: NoiseRng(seed),
-        },
-        biome: Noise {
-            noise: Fbm::<Simplex>::new(
-                Normed::default(),
-                Persistence(0.6),
-                FractalLayers {
-                    amount: 3,
-                    lacunarity: 2.0,
-                    ..Default::default()
-                },
-            ),
-            frequency: 0.0001,
-            seed: NoiseRng(seed + 1),
-        },
-        tree: Noise {
-            noise: Perlin::default(),
-            frequency: 0.069,
-            seed: NoiseRng(seed),
-        },
-        ferris: Noise {
-            noise: Perlin::default(),
-            frequency: 0.42,
-            seed: NoiseRng(seed),
-        },
-    };
-
-    game_info.saved_chunks = Arc::new(RwLock::new(saved_chunks.clone()));
-    game_info.materials.push(materials.add(StandardMaterial {
+    let mut mats = Vec::new();
+    mats.push(materials.add(StandardMaterial {
         base_color_texture: Some(asset_server.load("atlas.ktx2")),
         reflectance: 0.0,
         ..default()
     }));
-    game_info
-        .models
-        .push(asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/ferris.glb")));
-    game_info.current_block = BlockKind::Stone;
+    let mut models = Vec::new();
+    models.push(asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/ferris.glb")));
+
+    let game_info = GameInfo {
+        noises: NoiseFunctions {
+            terrain: Noise {
+                noise: Fbm::<Simplex>::new(
+                    Normed::default(),
+                    Persistence(0.5),
+                    FractalLayers {
+                        amount: 4,
+                        lacunarity: 2.0,
+                        ..Default::default()
+                    },
+                ),
+                frequency: 0.00200,
+                seed: NoiseRng(seed),
+            },
+            biome: Noise {
+                noise: Fbm::<Simplex>::new(
+                    Normed::default(),
+                    Persistence(0.6),
+                    FractalLayers {
+                        amount: 3,
+                        lacunarity: 2.0,
+                        ..Default::default()
+                    },
+                ),
+                frequency: 0.0001,
+                seed: NoiseRng(seed + 1),
+            },
+            tree: Noise {
+                noise: Perlin::default(),
+                frequency: 0.069,
+                seed: NoiseRng(seed),
+            },
+            ferris: Noise {
+                noise: Perlin::default(),
+                frequency: 0.42,
+                seed: NoiseRng(seed),
+            },
+        },
+        saved_chunks: Arc::new(RwLock::new(saved_chunks.clone())),
+        materials: mats,
+        models,
+        current_block: BlockKind::Stone,
+        ..default()
+    };
 
     toggle_grab_cursor(&mut window);
-
-    commands.spawn(PerfUiAllEntries::default());
 
     // godray lights when?
     commands.spawn((
@@ -270,154 +245,30 @@ fn setup(
         )),
     ));
 
-    let player = commands
-        .spawn((
-            Transform::from_translation(if player_pos == Vec3::INFINITY {
-                vec3(
-                    0.0,
-                    1.0 + terrain_noise(Vec2::ZERO, &game_info.noises).0 as f32,
-                    0.0,
-                )
-            } else {
-                player_pos
-            })
-            .with_rotation(Quat::from_rotation_y(player_yaw)),
-            Aabb::from_min_max(vec3(-0.25, 0.0, -0.25), vec3(0.25, 1.8, 0.25)),
-            Player,
-            Velocity::default(),
-            Visibility::Visible,
-        ))
-        .id();
-
-    commands.spawn((
-        Camera3d::default(),
-        Camera {
-            hdr: true,
-            ..default()
-        },
-        Msaa::Off,
-        PostProcessSettings::default(),
-        Skybox {
-            image: asset_server.load("skybox.ktx2"),
-            brightness: 1000.0,
-            ..default()
-        },
-        Bloom::NATURAL,
-        Tonemapping::TonyMcMapface,
-        Transform::from_xyz(0.0, 1.62, -0.05).with_rotation(Quat::from_rotation_x(player_pitch)), // minecraft way
-        PlayerCamera,
-        ChildOf(player),
-    ));
-
-    let ui = commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                padding: UiRect::all(Val::Px(5.0)),
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
-            GlobalZIndex(i32::MAX),
-        ))
-        .id();
-
-    commands.spawn((
-        Text::default(),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(5.0),
-            left: Val::Px(5.0),
-            ..default()
-        },
-        HUDText,
-        ChildOf(ui),
-    ));
-
-    let hotbar = commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                margin: UiRect::all(Val::Px(5.0)),
-                align_items: AlignItems::Center,
-                align_content: AlignContent::SpaceEvenly,
-                justify_content: JustifyContent::SpaceEvenly,
-                width: Val::Px(464.0),
-                height: Val::Px(56.0),
-                bottom: Val::Vh(2.0),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.8, 0.8, 0.8, 0.65)),
-            ChildOf(ui),
-        ))
-        .id();
-
-    let node = ImageNode::new(asset_server.load("atlas.png")).with_mode(NodeImageMode::Sliced(
-        TextureSlicer {
-            border: BorderRect::ZERO,
-            center_scale_mode: SliceScaleMode::Stretch,
-            sides_scale_mode: SliceScaleMode::Stretch,
-            max_corner_scale: 1.0,
-        },
-    ));
-
-    for i in 1..=10 {
-        if i == BlockKind::Water as u8 {
-            continue;
-        }
-
-        commands.spawn((
-            node.clone()
-                .with_rect(Rect::new(0.0, 16.0 * (i - 1) as f32, 16.0, 16.0 * i as f32)),
-            Node {
-                width: Val::Px(48.0),
-                height: Val::Px(48.0),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-            HotbarBlock(i),
-            ChildOf(hotbar),
-        ));
-    }
+    commands.insert_resource(game_info);
 }
 
-fn update(
+fn handle_keybinds(
     mut commands: Commands,
-    mut gizmos: Gizmos,
-    mut game_info: ResMut<GameInfo>,
-    mut coords_text: Single<&mut Text, With<HUDText>>,
-    mut persistent_saved_chunks: ResMut<Persistent<SavedWorld>>,
+    mut persistent_world: ResMut<Persistent<SavedWorld>>,
     mut primary_window: Single<&mut Window, With<PrimaryWindow>>,
-    mut mouse_scroll: EventReader<MouseWheel>,
+    mut wireframe_config: ResMut<WireframeConfig>,
     mut game_settings: ResMut<GameSettings>,
-    mut camera: Single<(&Transform, &mut Projection, &mut PostProcessSettings)>,
-    (mut wireframe_config, mut hotbar_blocks): (
-        ResMut<WireframeConfig>,
-        Query<(&mut ImageNode, &HotbarBlock)>,
-    ),
-    perf_ui: Query<&mut Visibility, With<PerfUiEntryFPS>>,
-    player: Single<&Transform, With<Player>>,
-    game_entities: Query<(Entity, &GameEntity)>,
-    chunks: Query<(Entity, &Transform), With<ChunkMarker>>,
-    mouse: Res<ButtonInput<MouseButton>>,
+    mut game_info: ResMut<GameInfo>,
+    mut camera: Single<(&Transform, &mut PostProcessSettings, &mut Projection), With<PlayerCamera>>,
+    player: Single<(&Transform, &Player)>,
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
     for button in keyboard.get_just_pressed() {
         match button {
             KeyCode::F1 => {
-                persistent_saved_chunks
-                    .update(|sc| {
-                        let saved_chunks = game_info.saved_chunks.read().unwrap();
-                        sc.1.0 = player.translation;
-                        let (_, pitch, _) = camera.0.rotation.to_euler(EulerRot::YXZ);
-                        let (yaw, _, _) = player.rotation.to_euler(EulerRot::YXZ);
-                        sc.1.1 = yaw;
-                        sc.1.2 = pitch;
-                        sc.2 = saved_chunks.clone();
-                    })
-                    .unwrap();
+                save_game(
+                    &mut persistent_world,
+                    player.0,
+                    camera.0,
+                    player.1.velocity,
+                    &game_info,
+                );
             }
             KeyCode::F2 => {
                 commands
@@ -437,9 +288,9 @@ fn update(
                 game_settings.chunk_borders = !game_settings.chunk_borders;
             }
             KeyCode::F7 => {
-                camera.2.sss += 1;
-                if camera.2.sss > 8 {
-                    camera.2.sss = 0;
+                camera.1.sss += 1;
+                if camera.1.sss > 8 {
+                    camera.1.sss = 0;
                 }
             }
             KeyCode::F8 => {
@@ -465,79 +316,24 @@ fn update(
         }
     }
 
-    // let block_idx = (game_info.current_block as u8 - 1) as f32;
-
-    for (mut image, block) in hotbar_blocks.iter_mut() {
-        if block.0 == game_info.current_block as u8 {
-            image.image_mode = NodeImageMode::Sliced(TextureSlicer {
-                border: BorderRect::all(2.0),
-                ..default()
-            });
-            image.color = Color::srgb(0.8, 0.8, 0.8);
-        } else {
-            image.image_mode = NodeImageMode::Auto;
-            image.color = Color::WHITE;
-        }
-    }
-
     let fov = if keyboard.pressed(KeyCode::KeyC) {
         10.0
     } else {
         game_settings.fov as f32
     };
 
-    *camera.1 = Projection::Perspective(PerspectiveProjection {
+    *camera.2 = Projection::Perspective(PerspectiveProjection {
         fov: fov.to_radians(),
         ..default()
     });
+}
 
-    for ev in mouse_scroll.read() {
-        let dir = -ev.y.signum();
-        let mut next = game_info.current_block as i32 + dir as i32;
-        if next == BlockKind::Water as i32 {
-            next += dir as i32;
-        }
-        if next < 1 {
-            next = 10;
-        } else if next > 10 {
-            next = 1;
-        }
-        game_info.current_block = BlockKind::from_u32(next as u32);
-    }
-
-    let (_, biome) = terrain_noise(player.translation.xz(), &game_info.noises);
-    coords_text.0 = format!(
-        "Coord: {:.02}\nBlock: {}\nChunk: {}\nBiome: {}\nIn Hand: {:?}",
-        player.translation,
-        vec3(
-            player.translation.x.rem_euclid(CHUNK_SIZE as f32),
-            player.translation.y,
-            player.translation.z.rem_euclid(CHUNK_SIZE as f32),
-        )
-        .as_ivec3(),
-        ivec2(
-            player.translation.x.div_euclid(CHUNK_SIZE as f32) as i32,
-            player.translation.z.div_euclid(CHUNK_SIZE as f32) as i32,
-        ),
-        // not really
-        if biome < 0.4 {
-            "Ocean"
-        } else if biome > 0.6 {
-            "Mountains"
-        } else {
-            "Plains"
-        },
-        game_info.current_block
-    );
-
-    for mut visibility in perf_ui {
-        *visibility = if game_settings.debug_menus {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        }
-    }
-
+fn handle_gizmos(
+    mut gizmos: Gizmos,
+    player: Single<&Transform, With<Player>>,
+    game_settings: Res<GameSettings>,
+    game_entities: Query<(Entity, &GameEntity)>,
+) {
     if game_settings.hitboxes {
         for (_, entity) in game_entities {
             let mut scale = vec3(1.0, 1.0, 1.0);
@@ -600,89 +396,6 @@ fn update(
                 chunk_size_vec,
                 Color::srgb(0.0, 1.0, 0.0),
             );
-        }
-    }
-
-    if let Some(hit) = ray_cast(
-        &game_info,
-        player.translation + camera.0.translation,
-        (player.rotation * camera.0.rotation * Vec3::NEG_Z).normalize_or_zero(),
-        5.0,
-    ) {
-        let hit_global_position = hit.global_position;
-        let mut local_pos = hit.local_pos;
-        let mut chunk_pos = hit.chunk_pos;
-
-        gizmos.cuboid(
-            Transform::from_translation(hit_global_position.as_vec3() + Vec3::splat(0.5)),
-            Color::srgb(1.0, 0.0, 0.0),
-        );
-
-        if mouse.just_pressed(MouseButton::Left) {
-            let mut write_guard = game_info.chunks.write().unwrap();
-            if let Some(chunk) = write_guard.get_mut(&chunk_pos) {
-                place_block(
-                    &mut commands,
-                    &mut game_info.saved_chunks.write().unwrap(),
-                    chunk,
-                    &chunks,
-                    local_pos,
-                    Block::AIR,
-                );
-            }
-        } else if mouse.just_pressed(MouseButton::Right) {
-            let mut write_guard = game_info.chunks.write().unwrap();
-
-            local_pos += hit.normal.as_vec3().as_ivec3();
-
-            if local_pos.y >= 0 && local_pos.y < CHUNK_HEIGHT - 1 {
-                if local_pos.x < 0 {
-                    local_pos.x += CHUNK_SIZE;
-                    chunk_pos.x -= 1;
-                } else if local_pos.x >= CHUNK_SIZE {
-                    local_pos.x -= CHUNK_SIZE;
-                    chunk_pos.x += 1;
-                }
-
-                if local_pos.z < 0 {
-                    local_pos.z += CHUNK_SIZE;
-                    chunk_pos.z -= 1;
-                } else if local_pos.z >= CHUNK_SIZE {
-                    local_pos.z -= CHUNK_SIZE;
-                    chunk_pos.z += 1;
-                }
-
-                if aabb_collision(
-                    player.translation,
-                    vec3(0.25, 1.8, 0.25),
-                    hit_global_position.as_vec3() + hit.normal.as_vec3(),
-                    Vec3::ONE,
-                ) {
-                    return;
-                }
-
-                if let Some(chunk) = write_guard.get_mut(&chunk_pos) {
-                    if chunk.blocks[vec3_to_index(local_pos)] == Block::AIR {
-                        place_block(
-                            &mut commands,
-                            &mut game_info.saved_chunks.write().unwrap(),
-                            chunk,
-                            &chunks,
-                            local_pos,
-                            Block {
-                                kind: game_info.current_block,
-                                direction: if game_info.current_block.can_rotate() {
-                                    hit.normal
-                                } else {
-                                    Default::default()
-                                },
-                            },
-                        );
-                    }
-                } else {
-                    warn!("placing in a chunk that doesn't exist {:?}", chunk_pos);
-                }
-            }
         }
     }
 }

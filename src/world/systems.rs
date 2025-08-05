@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, hash_map::Entry},
-    path::Path,
-};
+use std::collections::hash_map::Entry;
 
 use bevy::{
     asset::RenderAssetUsages,
@@ -10,114 +7,67 @@ use bevy::{
         mesh::{Indices, PrimitiveTopology},
         primitives::Aabb,
     },
-    tasks::{AsyncComputeTaskPool, Task, futures_lite::future},
+    tasks::{AsyncComputeTaskPool, futures_lite::future},
+    window::PrimaryWindow,
 };
-use bevy_persistent::{Persistent, StorageFormat};
-use serde::{Deserialize, Serialize};
+use bevy_persistent::Persistent;
+use rayon::slice::ParallelSliceMut;
 
 use crate::{
     CHUNK_HEIGHT, CHUNK_SIZE, GameInfo, GameSettings, SEA_LEVEL,
-    mesher::ChunkMesh,
-    player::Player,
-    utils::{Direction, TREE_OBJECT, generate_block_at, noise, terrain_noise, vec3_to_index},
+    player::{Player, PlayerCamera},
+    utils::{TREE_OBJECT, noise, vec3_to_index},
+    world::{
+        Chunk, ChunkMarker, ComputeChunk, ComputeChunkMesh, GameEntity, GameEntityKind, SavedChunk,
+        SavedWorld,
+        mesher::ChunkMesh,
+        utils::{generate_block_at, save_game, terrain_noise},
+    },
 };
 
-pub struct WorldPlugin;
-
-impl Plugin for WorldPlugin {
-    fn build(&self, app: &mut App) {
-        app.insert_resource(
-            Persistent::<SavedWorld>::builder()
-                .name("saved world")
-                .format(StorageFormat::Bincode)
-                .path(Path::new("saves").join("world.ferris"))
-                .default(SavedWorld(
-                    rand::random(),
-                    (Vec3::INFINITY, 0.0, 0.0),
-                    HashMap::new(),
-                ))
-                .build()
-                .expect("World save couldn't be read, please make a backup of saves/world.ferris and remove it from the saves folder."),
-        )
-        .add_systems(
-            Update,
-            (
-                handle_chunk_gen,
-                handle_mesh_gen,
-                handle_chunk_despawn
-                    .run_if(|game_settings: Res<GameSettings>| game_settings.despawn_chunks),
-                process_tasks,
-            ),
+pub fn autosave_and_exit(
+    mut persistent_world: ResMut<Persistent<SavedWorld>>,
+    mut app_exit: EventWriter<AppExit>,
+    mut last_time: Local<f32>,
+    window: Query<&Window, With<PrimaryWindow>>,
+    player: Single<(&Transform, &Player)>,
+    camera: Single<&Transform, With<PlayerCamera>>,
+    game_settings: Res<GameSettings>,
+    game_info: Res<GameInfo>,
+    time: Res<Time>,
+) {
+    if window.single().is_err() {
+        info!("saving and exiting");
+        save_game(
+            &mut persistent_world,
+            player.0,
+            &camera,
+            player.1.velocity,
+            &game_info,
         );
+        app_exit.write(AppExit::Success);
+        return;
+    }
+
+    let elapsed = time.elapsed_secs_wrapped();
+
+    if game_settings.autosave && elapsed > *last_time + 60.0 {
+        save_game(
+            &mut persistent_world,
+            player.0,
+            &camera,
+            player.1.velocity,
+            &game_info,
+        );
+        *last_time = elapsed;
+    }
+
+    if elapsed < *last_time {
+        *last_time = elapsed;
     }
 }
 
-#[derive(Component)]
-pub struct ChunkMarker;
-
-#[derive(Clone)]
-pub struct Chunk {
-    pub pos: IVec3,
-    pub entities: Vec<(Entity, GameEntity)>,
-    pub blocks: Vec<Block>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Default)]
-pub struct SavedChunk {
-    pub entities: Vec<(Entity, GameEntity)>,
-    pub blocks: HashMap<IVec3, Block>, // placed/broken blocks
-}
-
-#[derive(Resource, Clone, Default, Serialize, Deserialize)]
-pub struct SavedWorld(
-    pub u32,
-    pub (Vec3, f32, f32),
-    pub HashMap<IVec3, SavedChunk>,
-);
-
-#[derive(Component, Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Block {
-    pub kind: BlockKind,
-    pub direction: Direction,
-}
-
-#[derive(Component, Clone, Copy, Serialize, Deserialize, PartialEq)]
-pub struct GameEntity {
-    pub kind: GameEntityKind,
-    pub pos: Vec3,
-    pub rot: f32,
-}
-
-#[repr(u8)]
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, Serialize, Deserialize)]
-pub enum BlockKind {
-    #[default]
-    Air,
-    Stone,
-    Dirt,
-    Grass,
-    Plank,
-    Bedrock,
-    Water,
-    Sand,
-    Wood,
-    Leaf,
-    Snow,
-}
-
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum GameEntityKind {
-    Ferris,
-}
-
-#[derive(Component)]
-struct ComputeChunk(Task<Chunk>, IVec3);
-
-#[derive(Component)]
-struct ComputeChunkMesh(Task<Option<ChunkMesh>>, IVec3);
-
-fn handle_chunk_gen(
+pub fn handle_chunk_gen(
     mut commands: Commands,
     game_info: Res<GameInfo>,
     game_settings: Res<GameSettings>,
@@ -196,7 +146,7 @@ fn handle_chunk_gen(
                         if tree_probabilty > 0.85 && max_y < 90 && max_y > SEA_LEVEL + 2 {
                             for (y, tree_layer) in TREE_OBJECT.iter().enumerate() {
                                 for (z, tree_row) in tree_layer.iter().enumerate() {
-                                    for (x, block) in tree_row.iter().enumerate() {
+                                    for (x, &block) in tree_row.iter().enumerate() {
                                         let mut pos = ivec3(3 + x as i32, y as i32, 3 + z as i32);
                                         let (local_max_y, _) = terrain_noise(
                                             (chunk.pos * CHUNK_SIZE + pos).as_vec3().xz(),
@@ -209,7 +159,7 @@ fn handle_chunk_gen(
                                             && (0..CHUNK_HEIGHT).contains(&pos.y)
                                             && (0..CHUNK_SIZE).contains(&pos.z)
                                         {
-                                            chunk.blocks[vec3_to_index(pos)] = *block;
+                                            chunk.blocks[vec3_to_index(pos)] = block;
                                         } else if let Some(relative_chunk) =
                                             chunk.get_relative_chunk(pos)
                                             && let Some(target) =
@@ -218,7 +168,7 @@ fn handle_chunk_gen(
                                             let block_index =
                                                 vec3_to_index(pos - relative_chunk * CHUNK_SIZE);
                                             if block_index < target.blocks.len() {
-                                                target.blocks[block_index] = *block;
+                                                target.blocks[block_index] = block;
                                             }
                                         }
                                     }
@@ -241,7 +191,7 @@ fn handle_chunk_gen(
     }
 }
 
-fn handle_mesh_gen(
+pub fn handle_mesh_gen(
     mut commands: Commands,
     game_info: Res<GameInfo>,
     query: Query<(Entity, &Transform), Added<ChunkMarker>>,
@@ -265,7 +215,7 @@ fn handle_mesh_gen(
     }
 }
 
-fn handle_chunk_despawn(
+pub fn handle_chunk_despawn(
     mut commands: Commands,
     game_info: Res<GameInfo>,
     game_settings: Res<GameSettings>,
@@ -284,16 +234,10 @@ fn handle_chunk_despawn(
             || (pos.z - render_distance > pt.z as i32 / CHUNK_SIZE)
         {
             {
-                if let Some(chunk_entities) = game_info
-                    .chunks
-                    .read()
-                    .unwrap()
-                    .get(&pos)
-                    .map(|x| &x.entities)
-                {
-                    for &(entity, _) in chunk_entities {
-                        if entity != Entity::PLACEHOLDER {
-                            commands.entity(entity).try_despawn();
+                if let Some(chunk_entities) = game_info.chunks.read().unwrap().get(&pos) {
+                    for (entity, _) in &chunk_entities.entities {
+                        if *entity != Entity::PLACEHOLDER {
+                            commands.entity(*entity).try_despawn();
                         }
                     }
                 }
@@ -306,7 +250,7 @@ fn handle_chunk_despawn(
     }
 }
 
-fn process_tasks(
+pub fn process_tasks(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     player: Single<&Transform, With<Player>>,
@@ -315,12 +259,14 @@ fn process_tasks(
     game_info: Res<GameInfo>,
 ) {
     // GENERATING CHUNKS
+    let pt = player.translation.as_ivec3().with_y(0) / CHUNK_SIZE;
 
     let mut tasks = spawn_tasks.into_iter().collect::<Vec<_>>();
-    let pt = player.translation.as_ivec3().with_y(0) / CHUNK_SIZE;
-    tasks.sort_by(|(_, first), (_, second)| {
-        (first.1.distance_squared(pt)).cmp(&second.1.distance_squared(pt))
-    }); // should matter but i dont think it does.
+    tasks.par_sort_by_cached_key(|(_, x)| x.1.distance_squared(pt));
+
+    let mut chunks = game_info.chunks.write().unwrap();
+    let mut saved_chunks = game_info.saved_chunks.write().unwrap();
+    let mut loading_chunks = game_info.loading_chunks.write().unwrap();
 
     let mut processed_this_frame = 0;
     for (entity, mut compute_task) in tasks {
@@ -329,7 +275,7 @@ fn process_tasks(
         }
         if let Some(mut chunk) = future::block_on(future::poll_once(&mut compute_task.0)) {
             {
-                match game_info.saved_chunks.write().unwrap().entry(chunk.pos) {
+                match saved_chunks.entry(chunk.pos) {
                     Entry::Vacant(e) => {
                         e.insert(SavedChunk {
                             entities: chunk.entities.clone(),
@@ -368,8 +314,8 @@ fn process_tasks(
                 ))
                 .try_remove::<ComputeChunk>();
 
-            game_info.loading_chunks.write().unwrap().remove(&chunk.pos);
-            game_info.chunks.write().unwrap().insert(chunk.pos, chunk);
+            loading_chunks.remove(&chunk.pos);
+            chunks.insert(chunk.pos, chunk);
 
             processed_this_frame += 1;
         }
@@ -378,12 +324,7 @@ fn process_tasks(
     // GENERATING MESHES
 
     let mut tasks = mesh_tasks.into_iter().collect::<Vec<_>>();
-    tasks.sort_by(|(_, first), (_, second)| {
-        first
-            .1
-            .distance_squared(pt)
-            .cmp(&second.1.distance_squared(pt))
-    });
+    tasks.par_sort_by_cached_key(|(_, x)| x.1.distance_squared(pt));
 
     let mut processed_this_frame = 0;
     for (entity, mut compute_task) in tasks {
