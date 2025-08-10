@@ -13,6 +13,7 @@ use std::{
 };
 
 use bevy::{
+    core_pipeline::experimental::taa::TemporalAntiAliasPlugin,
     image::{ImageFilterMode, ImageSamplerDescriptor},
     input::common_conditions::input_just_pressed,
     pbr::wireframe::WireframeConfig,
@@ -25,27 +26,18 @@ use bevy::{
     window::{ExitCondition, PresentMode, PrimaryWindow, WindowMode},
 };
 use bevy_framepace::FramepacePlugin;
-use bevy_persistent::Persistent;
-use noiz::{
-    Noise,
-    prelude::{
-        FractalLayers, Normed, Persistence,
-        common_noise::{Fbm, Perlin, Simplex},
-    },
-    rng::NoiseRng,
-};
+use ferriscraft::{BlockKind, GameEntity, GameEntityKind};
 
 use crate::{
+    multiplayer::client::MultiplayerPlugin,
     player::{Player, PlayerCamera, PlayerPlugin},
     render_pipeline::{PostProcessSettings, RenderPipelinePlugin},
     ui::UIPlugin,
     utils::toggle_grab_cursor,
-    world::{
-        BlockKind, Chunk, GameEntity, GameEntityKind, SavedChunk, SavedWorld, WorldPlugin,
-        utils::{NoiseFunctions, save_game},
-    },
+    world::{Chunk, WorldPlugin, utils::NoiseFunctions},
 };
 
+mod multiplayer;
 mod player;
 mod render_pipeline;
 mod ui;
@@ -78,11 +70,6 @@ fn main() {
                         ..default()
                     },
                 })
-                .set(AssetPlugin {
-                    // for messing with shaders without restarting the game
-                    watch_for_changes_override: Some(true),
-                    ..default()
-                })
                 .set(RenderPlugin {
                     render_creation: RenderCreation::Automatic(WgpuSettings {
                         features: WgpuFeatures::POLYGON_MODE_LINE,
@@ -90,9 +77,20 @@ fn main() {
                     }),
                     ..default()
                 }),
+            TemporalAntiAliasPlugin,
             FramepacePlugin,
         ))
-        .add_plugins((WorldPlugin, PlayerPlugin, UIPlugin, RenderPipelinePlugin))
+        .add_plugins((
+            MultiplayerPlugin,
+            WorldPlugin,
+            PlayerPlugin,
+            UIPlugin,
+            RenderPipelinePlugin,
+        ))
+        .insert_resource(AmbientLight {
+            brightness: 1000.,
+            ..default()
+        })
         .init_resource::<GameInfo>()
         .insert_resource(GameSettings {
             render_distance: 16,
@@ -100,7 +98,7 @@ fn main() {
             jump_force: 7.7,
             sensitivity: 1.2,
             fov: 60,
-            gravity: 23.31,
+            gravity: -23.31,
             autosave: true,
             despawn_chunks: true,
             #[cfg(debug_assertions)]
@@ -115,7 +113,10 @@ fn main() {
             Update,
             PausableSystems.run_if(|settings: Res<GameSettings>| !settings.paused),
         )
-        .add_systems(Startup, setup)
+        .configure_sets(
+            FixedUpdate,
+            PausableSystems.run_if(|settings: Res<GameSettings>| !settings.paused),
+        )
         // toggle pause
         .add_systems(
             Update,
@@ -141,7 +142,6 @@ const SEA_LEVEL: i32 = 64; // MAX CHUNK_HEIGHT - 180
 struct GameInfo {
     chunks: Arc<RwLock<HashMap<IVec3, Chunk>>>,
     loading_chunks: Arc<RwLock<HashSet<IVec3>>>,
-    saved_chunks: Arc<RwLock<HashMap<IVec3, SavedChunk>>>,
     materials: Vec<Handle<StandardMaterial>>,
     models: Vec<Handle<Scene>>,
     noises: NoiseFunctions,
@@ -164,111 +164,27 @@ struct GameSettings {
     paused: bool,
 }
 
-fn setup(
-    mut commands: Commands,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut window: Single<&mut Window, With<PrimaryWindow>>,
-    persistent_world: Res<Persistent<SavedWorld>>,
-    asset_server: Res<AssetServer>,
-) {
-    let &SavedWorld(seed, _, ref saved_chunks) = persistent_world.get();
-
-    let mut mats = Vec::new();
-    mats.push(materials.add(StandardMaterial {
-        base_color_texture: Some(asset_server.load("atlas.ktx2")),
-        reflectance: 0.0,
-        ..default()
-    }));
-    let mut models = Vec::new();
-    models.push(asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/ferris.glb")));
-
-    let game_info = GameInfo {
-        noises: NoiseFunctions {
-            terrain: Noise {
-                noise: Fbm::<Simplex>::new(
-                    Normed::default(),
-                    Persistence(0.5),
-                    FractalLayers {
-                        amount: 4,
-                        lacunarity: 2.0,
-                        ..Default::default()
-                    },
-                ),
-                frequency: 0.00200,
-                seed: NoiseRng(seed),
-            },
-            biome: Noise {
-                noise: Fbm::<Simplex>::new(
-                    Normed::default(),
-                    Persistence(0.6),
-                    FractalLayers {
-                        amount: 3,
-                        lacunarity: 2.0,
-                        ..Default::default()
-                    },
-                ),
-                frequency: 0.0001,
-                seed: NoiseRng(seed + 1),
-            },
-            tree: Noise {
-                noise: Perlin::default(),
-                frequency: 0.069,
-                seed: NoiseRng(seed),
-            },
-            ferris: Noise {
-                noise: Perlin::default(),
-                frequency: 0.42,
-                seed: NoiseRng(seed),
-            },
-        },
-        saved_chunks: Arc::new(RwLock::new(saved_chunks.clone())),
-        materials: mats,
-        models,
-        current_block: BlockKind::Stone,
-        ..default()
-    };
-
-    toggle_grab_cursor(&mut window);
-
-    // godray lights when?
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 5_000.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        Transform::from_rotation(Quat::from_euler(
-            EulerRot::ZYX,
-            0.0,
-            33.5_f32.to_radians(),
-            -47.3_f32.to_radians(),
-        )),
-    ));
-
-    commands.insert_resource(game_info);
-}
-
 fn handle_keybinds(
     mut commands: Commands,
-    mut persistent_world: ResMut<Persistent<SavedWorld>>,
+    // mut persistent_world: ResMut<Persistent<SavedWorld>>,
     mut primary_window: Single<&mut Window, With<PrimaryWindow>>,
     mut wireframe_config: ResMut<WireframeConfig>,
     mut game_settings: ResMut<GameSettings>,
     mut game_info: ResMut<GameInfo>,
     mut camera: Single<(&Transform, &mut PostProcessSettings, &mut Projection), With<PlayerCamera>>,
-    player: Single<(&Transform, &Player)>,
+    // player: Single<(&Transform, &Player)>,
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
     for button in keyboard.get_just_pressed() {
         match button {
             KeyCode::F1 => {
-                save_game(
-                    &mut persistent_world,
-                    player.0,
-                    camera.0,
-                    player.1.velocity,
-                    &game_info,
-                );
+                // save_game(
+                //     &mut persistent_world,
+                //     player.0,
+                //     camera.0,
+                //     player.1.velocity,
+                //     &game_info,
+                // );
             }
             KeyCode::F2 => {
                 commands
