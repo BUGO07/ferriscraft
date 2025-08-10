@@ -1,21 +1,25 @@
 use crate::{
     CHUNK_HEIGHT, CHUNK_SIZE, GameInfo, GameSettings, PausableSystems,
     render_pipeline::PostProcessSettings,
+    ui::GameState,
     utils::{aabb_collision, ray_cast, vec3_to_index},
     world::{
-        Block, ChunkMarker, SavedWorld,
+        ChunkMarker,
         utils::{NoiseFunctions, place_block, terrain_noise},
     },
 };
 use bevy::{
-    core_pipeline::{Skybox, bloom::Bloom, tonemapping::Tonemapping},
+    core_pipeline::{
+        Skybox, bloom::Bloom, experimental::taa::TemporalAntiAliasing, tonemapping::Tonemapping,
+    },
     input::mouse::MouseMotion,
+    pbr::ScreenSpaceAmbientOcclusion,
     prelude::*,
     render::primitives::Aabb,
     window::{CursorGrabMode, PrimaryWindow},
 };
-use bevy_persistent::Persistent;
-use serde::{Deserialize, Serialize};
+use bevy_renet::renet::RenetClient;
+use ferriscraft::{Block, ClientPacket};
 
 pub struct PlayerPlugin;
 
@@ -24,8 +28,14 @@ impl Plugin for PlayerPlugin {
         app.add_systems(Startup, setup);
         app.add_systems(
             Update,
-            (
-                player_movement.run_if(
+            (camera_movement, handle_interactions)
+                .run_if(in_state(GameState::MultiPlayer))
+                .in_set(PausableSystems),
+        )
+        .add_systems(
+            FixedUpdate,
+            player_movement
+                .run_if(
                     // only run if chunks have been loaded
                     |game_info: Res<GameInfo>,
                      game_settings: Res<GameSettings>,
@@ -38,61 +48,46 @@ impl Plugin for PlayerPlugin {
                         }
                         *is_loaded
                     },
-                ),
-                camera_movement,
-                handle_interactions,
-            )
+                )
                 .in_set(PausableSystems),
         );
     }
 }
 
-#[derive(Component, Default, Serialize, Deserialize, Clone, Copy)]
+#[derive(Component, Default, Clone, Copy)]
 pub struct Player {
     pub velocity: Vec3,
 }
 
 #[derive(Component)]
+pub struct OnlinePlayer(pub u64);
+
+#[derive(Component)]
 pub struct PlayerCamera;
 
-fn setup(
-    mut commands: Commands,
-    persistent_world: Res<Persistent<SavedWorld>>,
-    asset_server: Res<AssetServer>,
-    game_info: Res<GameInfo>,
+fn setup(// mut commands: Commands,
+    // persistent_world: Res<Persistent<SavedWorld>>,
+    // asset_server: Res<AssetServer>,
+    // game_info: Res<GameInfo>,
 ) {
-    let &SavedWorld(_, (player_pos, player_velocity, player_yaw, player_pitch), _) =
-        persistent_world.get();
-
-    let player = commands
-        .spawn(player_bundle(
-            player_pos,
-            player_velocity,
-            player_yaw,
-            &game_info.noises,
-        ))
-        .id();
-
-    commands.spawn(camera_bundle(
-        asset_server.load("skybox.ktx2"),
-        player,
-        player_pitch,
-    ));
+    // let &SavedWorld(_, (player_pos, player_velocity, player_yaw, player_pitch), _) =
+    //     persistent_world.get();
 }
 
 fn handle_interactions(
     mut commands: Commands,
     mut gizmos: Gizmos,
+    mut client: ResMut<RenetClient>,
     game_info: Res<GameInfo>,
     player: Single<&Transform, (With<Player>, Without<PlayerCamera>)>,
-    camera: Single<&Transform, (With<PlayerCamera>, Without<Player>)>,
+    camera: Single<&GlobalTransform, (With<PlayerCamera>, Without<Player>)>,
     chunks: Query<(Entity, &Transform), With<ChunkMarker>>,
     mouse: Res<ButtonInput<MouseButton>>,
 ) {
     if let Some(hit) = ray_cast(
         &game_info,
-        player.translation + camera.translation,
-        (player.rotation * camera.rotation * Vec3::NEG_Z).normalize_or_zero(),
+        camera.translation(),
+        (camera.rotation() * Vec3::NEG_Z).normalize_or_zero(),
         5.0,
     ) {
         let hit_global_position = hit.global_position;
@@ -108,7 +103,8 @@ fn handle_interactions(
             if let Some(chunk) = game_info.chunks.write().unwrap().get_mut(&chunk_pos) {
                 place_block(
                     &mut commands,
-                    &mut game_info.saved_chunks.write().unwrap(),
+                    &mut client,
+                    // &mut game_info.saved_chunks.write().unwrap(),
                     chunk,
                     &chunks,
                     local_pos,
@@ -148,7 +144,8 @@ fn handle_interactions(
                     if chunk.blocks[vec3_to_index(local_pos)] == Block::AIR {
                         place_block(
                             &mut commands,
-                            &mut game_info.saved_chunks.write().unwrap(),
+                            &mut client,
+                            // &mut game_info.saved_chunks.write().unwrap(),
                             chunk,
                             &chunks,
                             local_pos,
@@ -195,6 +192,7 @@ fn camera_movement(
 }
 
 fn player_movement(
+    client: ResMut<RenetClient>,
     player: Single<(&mut Transform, &mut Player)>,
     keyboard: Res<ButtonInput<KeyCode>>,
     settings: Res<GameSettings>,
@@ -209,11 +207,9 @@ fn player_movement(
     let mut sprint_multiplier = 1.0;
 
     let local_z = transform.local_z();
+    let forward = -Vec3::new(local_z.x, 0.0, local_z.z).normalize_or_zero();
+    let right = Vec3::new(local_z.z, 0.0, -local_z.x).normalize_or_zero();
 
-    let forward = -Vec3::new(local_z.x, 0., local_z.z).normalize_or_zero();
-    let right = Vec3::new(local_z.z, 0., -local_z.x).normalize_or_zero();
-
-    let should_jump = keyboard.pressed(KeyCode::Space);
     let sneaking = keyboard.pressed(KeyCode::ShiftLeft);
 
     if keyboard.pressed(KeyCode::KeyW) {
@@ -240,6 +236,14 @@ fn player_movement(
         move_dir.z * settings.movement_speed * sprint_multiplier,
     );
 
+    if sneaking {
+        target_velocity *= 0.5;
+
+        // if ray_cast(&game_info, transform.translation, -Vec3::Y, 0.2).is_none() {
+        // TODO
+        // }
+    }
+
     let movement_collision_offsets = &[
         vec3(0.25, 0.0, 0.25),
         vec3(-0.25, 0.0, 0.25),
@@ -254,18 +258,14 @@ fn player_movement(
     ];
 
     if target_velocity.x != 0.0 {
-        let intended_move_x = Vec3::new(target_velocity.x * delta, 0.0, 0.0);
-        let collision_ray_direction_x = intended_move_x.normalize_or_zero();
-        let ray_check_distance_x = intended_move_x.length() + 0.05;
+        let move_x = Vec3::new(target_velocity.x * delta, 0.0, 0.0);
+        let dir_x = move_x.normalize_or_zero();
+        let distance_x = move_x.length() + 0.05;
 
-        for pos_offset in movement_collision_offsets {
-            let ray_origin_for_collision = transform.translation + *pos_offset + Vec3::Y * 0.01;
-            if let Some(hit) = ray_cast(
-                &game_info,
-                ray_origin_for_collision,
-                collision_ray_direction_x,
-                ray_check_distance_x,
-            ) && hit.normal.as_vec3().dot(collision_ray_direction_x) < -0.1
+        for offset in movement_collision_offsets {
+            let origin = transform.translation + *offset + Vec3::Y * 0.01;
+            if let Some(hit) = ray_cast(&game_info, origin, dir_x, distance_x)
+                && hit.normal.as_vec3().dot(dir_x) < -0.1
             {
                 target_velocity.x = 0.0;
                 break;
@@ -274,29 +274,18 @@ fn player_movement(
     }
 
     if target_velocity.z != 0.0 {
-        let intended_move_z = Vec3::new(0.0, 0.0, target_velocity.z * delta);
-        let collision_ray_direction_z = intended_move_z.normalize_or_zero();
-        let ray_check_distance_z = intended_move_z.length() + 0.05;
+        let move_z = Vec3::new(0.0, 0.0, target_velocity.z * delta);
+        let dir_z = move_z.normalize_or_zero();
+        let distance_z = move_z.length() + 0.05;
 
-        for pos_offset in movement_collision_offsets {
-            let ray_origin_for_collision = transform.translation + *pos_offset + Vec3::Y * 0.01;
-            if let Some(hit) = ray_cast(
-                &game_info,
-                ray_origin_for_collision,
-                collision_ray_direction_z,
-                ray_check_distance_z,
-            ) && hit.normal.as_vec3().dot(collision_ray_direction_z) < -0.1
+        for offset in movement_collision_offsets {
+            let origin = transform.translation + *offset + Vec3::Y * 0.01;
+            if let Some(hit) = ray_cast(&game_info, origin, dir_z, distance_z)
+                && hit.normal.as_vec3().dot(dir_z) < -0.1
             {
                 target_velocity.z = 0.0;
                 break;
             }
-        }
-    }
-
-    if sneaking {
-        target_velocity *= 0.5;
-        if ray_cast(&game_info, transform.translation, -Vec3::Y, 0.2).is_none() {
-            // TODO
         }
     }
 
@@ -306,7 +295,7 @@ fn player_movement(
     let mut grounded = false;
     let mut closest_ground_distance = f32::MAX;
 
-    let grounded_collision_offsets = &[
+    let grounded_offsets = &[
         vec3(0.25, 0.1, 0.25),
         vec3(-0.25, 0.1, 0.25),
         vec3(0.25, 0.1, -0.25),
@@ -314,8 +303,11 @@ fn player_movement(
         vec3(0.0, 0.1, 0.0),
     ];
 
-    for offset in grounded_collision_offsets {
-        if let Some(hit) = ray_cast(&game_info, transform.translation + offset, -Vec3::Y, 0.2) {
+    for offset in grounded_offsets {
+        let origin = transform.translation + *offset;
+        let fall_distance = player.velocity.y.abs() * delta + 0.1;
+
+        if let Some(hit) = ray_cast(&game_info, origin, -Vec3::Y, fall_distance) {
             grounded = true;
 
             if hit.distance < closest_ground_distance {
@@ -325,27 +317,21 @@ fn player_movement(
     }
 
     if grounded {
-        if should_jump {
-            let mut hit = false;
-
-            for offset in grounded_collision_offsets {
-                if ray_cast(
-                    &game_info,
-                    transform.translation + Vec3::Y * 1.8 + offset,
-                    Vec3::Y,
-                    0.3,
-                )
-                .is_some()
-                {
-                    hit = true;
+        if keyboard.pressed(KeyCode::Space) {
+            let mut head_blocked = false;
+            for offset in grounded_offsets {
+                let origin = transform.translation + Vec3::Y * 1.8 + *offset;
+                if ray_cast(&game_info, origin, Vec3::Y, 0.3).is_some() {
+                    head_blocked = true;
                     break;
                 }
             }
-            if hit {
-                player.velocity.y = settings.jump_force / 4.0;
+
+            player.velocity.y = if head_blocked {
+                settings.jump_force / 4.0
             } else {
-                player.velocity.y = settings.jump_force;
-            }
+                settings.jump_force
+            };
         } else {
             player.velocity.y = 0.0;
         }
@@ -357,13 +343,18 @@ fn player_movement(
             transform.translation.y -= closest_ground_distance - 0.1;
         }
     } else {
-        player.velocity.y -= settings.gravity * delta;
+        player.velocity.y += settings.gravity * delta;
+        player.velocity.y = player.velocity.y.max(-78.4);
     }
 
     transform.translation += player.velocity * delta;
+
+    if player.velocity.length() > 0.0 {
+        ClientPacket::Move(transform.translation).send(client.into_inner());
+    }
 }
 
-fn player_bundle(
+pub fn player_bundle(
     player_pos: Vec3,
     player_velocity: Vec3,
     player_yaw: f32,
@@ -384,7 +375,7 @@ fn player_bundle(
     )
 }
 
-fn camera_bundle(skybox: Handle<Image>, player: Entity, pitch: f32) -> impl Bundle {
+pub fn camera_bundle(skybox: Handle<Image>, player: Entity, pitch: f32) -> impl Bundle {
     (
         Camera3d::default(),
         Camera {
@@ -392,6 +383,7 @@ fn camera_bundle(skybox: Handle<Image>, player: Entity, pitch: f32) -> impl Bund
             ..default()
         },
         Msaa::Off,
+        TemporalAntiAliasing::default(),
         PostProcessSettings::default(),
         Skybox {
             image: skybox,
@@ -400,6 +392,7 @@ fn camera_bundle(skybox: Handle<Image>, player: Entity, pitch: f32) -> impl Bund
         },
         Bloom::NATURAL,
         Tonemapping::TonyMcMapface,
+        ScreenSpaceAmbientOcclusion::default(),
         Transform::from_xyz(0.0, 1.62, -0.05).with_rotation(Quat::from_rotation_x(pitch)), // minecraft way
         PlayerCamera,
         ChildOf(player),

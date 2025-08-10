@@ -1,10 +1,15 @@
 use bevy::{prelude::*, window::CursorGrabMode};
-use noiz::{Noise, NoiseFunction, SampleableFor};
-
-use crate::{
-    CHUNK_HEIGHT, CHUNK_SIZE, GameInfo,
-    world::{Block, utils::Direction},
+use ferriscraft::{Block, Direction};
+use noiz::{
+    Noise, NoiseFunction, SampleableFor,
+    prelude::{
+        FractalLayers, Normed, Persistence,
+        common_noise::{Fbm, Perlin, Simplex},
+    },
+    rng::NoiseRng,
 };
+
+use crate::{CHUNK_HEIGHT, CHUNK_SIZE, GameInfo, world::utils::NoiseFunctions};
 
 #[inline]
 pub fn vec3_to_index(pos: IVec3) -> usize {
@@ -50,6 +55,48 @@ pub fn toggle_grab_cursor(window: &mut Window) {
     } else {
         window.cursor_options.grab_mode = CursorGrabMode::None;
         window.cursor_options.visible = true;
+    }
+}
+
+#[inline]
+pub fn get_noise_functions(seed: u32) -> NoiseFunctions {
+    NoiseFunctions {
+        terrain: Noise {
+            noise: Fbm::<Simplex>::new(
+                Normed::default(),
+                Persistence(0.5),
+                FractalLayers {
+                    amount: 4,
+                    lacunarity: 2.0,
+                    ..Default::default()
+                },
+            ),
+            frequency: 0.00200,
+            seed: NoiseRng(seed),
+        },
+        biome: Noise {
+            noise: Fbm::<Simplex>::new(
+                Normed::default(),
+                Persistence(0.6),
+                FractalLayers {
+                    amount: 3,
+                    lacunarity: 2.0,
+                    ..Default::default()
+                },
+            ),
+            frequency: 0.0001,
+            seed: NoiseRng(seed + 1),
+        },
+        tree: Noise {
+            noise: Perlin::default(),
+            frequency: 0.069,
+            seed: NoiseRng(seed),
+        },
+        ferris: Noise {
+            noise: Perlin::default(),
+            frequency: 0.42,
+            seed: NoiseRng(seed),
+        },
     }
 }
 

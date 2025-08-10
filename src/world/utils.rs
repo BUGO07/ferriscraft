@@ -1,39 +1,16 @@
-use std::collections::{HashMap, hash_map::Entry};
-
 use bevy::prelude::*;
-use bevy_persistent::Persistent;
+use bevy_renet::renet::RenetClient;
+use ferriscraft::{Block, ClientPacket, Direction};
 use noiz::{
     Noise,
     prelude::common_noise::{Fbm, Perlin, Simplex},
 };
-use serde::{Deserialize, Serialize};
 
 use crate::{
-    CHUNK_SIZE, GameInfo, SEA_LEVEL,
+    CHUNK_SIZE, SEA_LEVEL,
     utils::{noise, vec3_to_index},
-    world::{Block, Chunk, ChunkMarker, SavedChunk, SavedWorld},
+    world::{Chunk, ChunkMarker},
 };
-
-pub fn save_game(
-    persistent_world: &mut ResMut<Persistent<SavedWorld>>,
-    player: &Transform,
-    camera: &Transform,
-    velocity: Vec3,
-    game_info: &GameInfo,
-) {
-    persistent_world
-        .update(|sc| {
-            let saved_chunks = game_info.saved_chunks.read().unwrap();
-            sc.1.0 = player.translation;
-            sc.1.1 = velocity;
-            let (_, pitch, _) = camera.rotation.to_euler(EulerRot::YXZ);
-            let (yaw, _, _) = player.rotation.to_euler(EulerRot::YXZ);
-            sc.1.2 = yaw;
-            sc.1.3 = pitch;
-            sc.2 = saved_chunks.clone();
-        })
-        .unwrap();
-}
 
 pub fn update_chunk(
     commands: &mut Commands,
@@ -52,24 +29,25 @@ pub fn update_chunk(
 
 pub fn place_block(
     commands: &mut Commands,
-    saved_chunks: &mut HashMap<IVec3, SavedChunk>,
+    client: &mut RenetClient,
+    // saved_chunks: &mut HashMap<IVec3, SavedChunk>,
     chunk: &mut Chunk,
     chunks: &Query<(Entity, &Transform), With<ChunkMarker>>,
     pos: IVec3,
     block: Block,
 ) {
     chunk.blocks[vec3_to_index(pos)] = block;
-    match saved_chunks.entry(chunk.pos) {
-        Entry::Vacant(e) => {
-            e.insert(SavedChunk {
-                blocks: HashMap::from([(pos, block)]),
-                entities: chunk.entities.clone(),
-            });
-        }
-        Entry::Occupied(mut e) => {
-            e.get_mut().blocks.insert(pos, block);
-        }
-    }
+    // match saved_chunks.entry(chunk.pos) {
+    //     Entry::Vacant(e) => {
+    //         e.insert(SavedChunk {
+    //             blocks: HashMap::from([(pos, block)]),
+    //             entities: chunk.entities.clone(),
+    //         });
+    //     }
+    //     Entry::Occupied(mut e) => {
+    //         e.get_mut().blocks.insert(pos, block);
+    //     }
+    // }
     if pos.x == 0 {
         update_chunk(commands, chunks, chunk.pos - IVec3::X);
     }
@@ -83,6 +61,7 @@ pub fn place_block(
         update_chunk(commands, chunks, chunk.pos + IVec3::Z);
     }
     update_chunk(commands, chunks, chunk.pos);
+    ClientPacket::PlaceBlock(chunk.pos * CHUNK_SIZE + pos, block).send(client);
 }
 
 #[derive(Default, Clone, Copy)]
@@ -177,97 +156,6 @@ pub fn generate_block_at(pos: IVec3, max_y: i32) -> Block {
 
     // terrain_block
 }
-
-#[repr(u8)]
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, Serialize, Deserialize)]
-pub enum Direction {
-    Left,
-    Right,
-    Bottom,
-    #[default]
-    Top,
-    Back,
-    Front,
-}
-
-impl Direction {
-    pub const NORMALS: &[Vec3; 6] = &[
-        vec3(-1.0, 0.0, 0.0), // Left
-        vec3(1.0, 0.0, 0.0),  // Right
-        vec3(0.0, -1.0, 0.0), // Bottom
-        vec3(0.0, 1.0, 0.0),  // Top
-        vec3(0.0, 0.0, -1.0), // Back
-        vec3(0.0, 0.0, 1.0),  // Front
-    ];
-
-    #[inline]
-    pub fn as_vec3(self) -> Vec3 {
-        Self::NORMALS[self as usize]
-    }
-
-    #[inline]
-    pub fn get_opposite(self) -> Self {
-        match self {
-            Direction::Left => Direction::Right,
-            Direction::Right => Direction::Left,
-            Direction::Bottom => Direction::Top,
-            Direction::Top => Direction::Bottom,
-            Direction::Back => Direction::Front,
-            Direction::Front => Direction::Back,
-        }
-    }
-
-    #[inline]
-    pub fn get_uvs(self, block: Block) -> [Vec2; 4] {
-        const ATLAS_SIZE_X: f32 = 3.0;
-        const ATLAS_SIZE_Y: f32 = 10.0;
-
-        let face_idx = match self {
-            d if d == block.direction => 0.0,
-            d if d == block.direction.get_opposite() => 2.0,
-            _ => 1.0,
-        };
-
-        let pos = vec2(
-            face_idx / ATLAS_SIZE_X,
-            (block.kind as u32 - 1) as f32 / ATLAS_SIZE_Y,
-        );
-
-        let base = [
-            vec2(pos.x, pos.y + 1.0 / ATLAS_SIZE_Y),
-            vec2(pos.x, pos.y),
-            vec2(pos.x + 1.0 / ATLAS_SIZE_X, pos.y),
-            vec2(pos.x + 1.0 / ATLAS_SIZE_X, pos.y + 1.0 / ATLAS_SIZE_Y),
-        ];
-        let rotate_90 = [base[3], base[0], base[1], base[2]];
-        let rotate_180 = [base[2], base[3], base[0], base[1]];
-        let rotate_270 = [base[1], base[2], base[3], base[0]];
-
-        // HOLY BAD CODE
-        use Direction::*;
-        match (block.direction, self) {
-            (Right, Top | Bottom) => base,
-            (Right, Back) => rotate_90,
-            (Right, _) => rotate_270,
-            (Top, Front | Back) => base,
-            (Top, Left) => rotate_90,
-            (Top, _) => rotate_270,
-            (Front, Right | Left) => base,
-            (Front, Bottom) => rotate_90,
-            (Front, _) => rotate_270,
-            (Left, Top | Bottom) => rotate_180,
-            (Left, Back) => rotate_270,
-            (Left, _) => rotate_90,
-            (Bottom, Front | Back) => rotate_180,
-            (Bottom, Left) => rotate_270,
-            (Bottom, _) => rotate_90,
-            (Back, Right | Left) => rotate_180,
-            (Back, Bottom) => rotate_270,
-            (Back, _) => rotate_90,
-        }
-    }
-}
-
 pub struct Quad {
     pub corners: [[f32; 3]; 4],
 }
