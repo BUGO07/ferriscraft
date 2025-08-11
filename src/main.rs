@@ -26,7 +26,7 @@ use bevy::{
     window::{ExitCondition, PresentMode, PrimaryWindow, WindowMode},
 };
 use bevy_framepace::FramepacePlugin;
-use ferriscraft::{BlockKind, GameEntity, GameEntityKind, SavedChunk};
+use ferriscraft::{BlockKind, CHUNK_HEIGHT, CHUNK_SIZE, GameEntity, GameEntityKind, SavedChunk};
 
 use crate::{
     multiplayer::client::MultiplayerPlugin,
@@ -34,7 +34,7 @@ use crate::{
     render_pipeline::{PostProcessSettings, RenderPipelinePlugin},
     singleplayer::SinglePlayerPlugin,
     ui::{GameState, MenuState, UIPlugin},
-    utils::toggle_grab_cursor,
+    utils::set_cursor_grab,
     world::{Chunk, WorldPlugin, utils::NoiseFunctions},
 };
 
@@ -114,13 +114,21 @@ fn main() {
         })
         .configure_sets(
             Update,
-            PausableSystems.run_if(|settings: Res<GameSettings>| !settings.paused),
+            PausableSystems.run_if(
+                |settings: Res<GameSettings>, game_state: Res<State<GameState>>| {
+                    !settings.paused || game_state.get() == &GameState::MultiPlayer
+                },
+            ),
         )
         .configure_sets(
             FixedUpdate,
-            PausableSystems.run_if(|settings: Res<GameSettings>| !settings.paused),
+            PausableSystems.run_if(
+                |settings: Res<GameSettings>, game_state: Res<State<GameState>>| {
+                    !settings.paused || game_state.get() == &GameState::MultiPlayer
+                },
+            ),
         )
-        // toggle pause
+        // escape button
         .add_systems(
             Update,
             (|mut game_settings: ResMut<GameSettings>,
@@ -134,31 +142,25 @@ fn main() {
                             // game_settings.paused = !game_settings.paused;
                             // toggle_grab_cursor(&mut window);
                         }
-                        MenuState::MultiPlayer => {
+                        _ => {
                             next_menu_state.set(MenuState::Main);
                         }
-                        MenuState::SinglePlayer => {
-                            next_menu_state.set(MenuState::Main);
-                        }
-                        _ => {}
                     }
                 } else {
                     game_settings.paused = !game_settings.paused;
-                    toggle_grab_cursor(&mut window);
+                    set_cursor_grab(&mut window, !game_settings.paused);
                 }
             })
             .run_if(input_just_pressed(KeyCode::Escape)),
         )
         .add_systems(
             Update,
-            (handle_keybinds, handle_gizmos).in_set(PausableSystems),
+            (handle_keybinds, handle_gizmos)
+                .run_if(not(in_state(GameState::Menu)))
+                .in_set(PausableSystems),
         )
         .run();
 }
-
-const CHUNK_SIZE: i32 = 16; // MAX 63
-const CHUNK_HEIGHT: i32 = 256; // MAX 511
-const SEA_LEVEL: i32 = 64; // MAX CHUNK_HEIGHT - 180
 
 #[derive(Resource, Default)]
 struct GameInfo {

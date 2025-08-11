@@ -29,7 +29,7 @@ impl Plugin for PlayerPlugin {
         app.add_systems(
             Update,
             (camera_movement, handle_interactions)
-                .run_if(in_state(GameState::MultiPlayer).or(in_state(GameState::SinglePlayer)))
+                .run_if(not(in_state(GameState::Menu)))
                 .in_set(PausableSystems),
         )
         .add_systems(
@@ -49,6 +49,7 @@ impl Plugin for PlayerPlugin {
                         *is_loaded
                     },
                 )
+                .run_if(not(in_state(GameState::Menu)))
                 .in_set(PausableSystems),
         );
     }

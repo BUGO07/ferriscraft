@@ -48,8 +48,8 @@ pub fn noise<T: NoiseFunction<Vec2, Output = f32>>(noise: Noise<T>, pos: Vec2) -
 }
 
 #[inline]
-pub fn toggle_grab_cursor(window: &mut Window) {
-    if window.cursor_options.grab_mode == CursorGrabMode::None {
+pub fn set_cursor_grab(window: &mut Window, val: bool) {
+    if val {
         window.cursor_options.grab_mode = CursorGrabMode::Locked;
         window.cursor_options.visible = false;
     } else {
