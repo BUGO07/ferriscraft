@@ -17,7 +17,7 @@ use iyes_perf_ui::prelude::PerfUiAllEntries;
 use crate::{
     GameInfo,
     player::{OnlinePlayer, camera_bundle, player_bundle},
-    ui::{GameState, coords_bundle, hotbar_block, hotbar_bundle, ui_bundle},
+    ui::{GameState, coords_bundle, hotbar_block, hotbar_bundle, root_ui_bundle},
     utils::{get_noise_functions, toggle_grab_cursor},
 };
 
@@ -143,7 +143,7 @@ fn on_connect(
             .insert(StateScoped(GameState::MultiPlayer));
 
         let ui = commands
-            .spawn(ui_bundle())
+            .spawn(root_ui_bundle())
             .insert(StateScoped(GameState::MultiPlayer))
             .id();
 

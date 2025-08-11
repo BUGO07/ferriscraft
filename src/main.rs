@@ -97,7 +97,7 @@ fn main() {
         .init_resource::<GameInfo>()
         .insert_resource(GameSettings {
             render_distance: 16,
-            movement_speed: 3.0,
+            movement_speed: 4.32,
             jump_force: 7.7,
             sensitivity: 1.2,
             fov: 60,
@@ -164,7 +164,7 @@ const SEA_LEVEL: i32 = 64; // MAX CHUNK_HEIGHT - 180
 struct GameInfo {
     chunks: Arc<RwLock<HashMap<IVec3, Chunk>>>,
     loading_chunks: Arc<RwLock<HashSet<IVec3>>>,
-    saved_chunks: Arc<RwLock<HashMap<IVec3, SavedChunk>>>,
+    saved_chunks: Option<Arc<RwLock<HashMap<IVec3, SavedChunk>>>>,
     materials: Vec<Handle<StandardMaterial>>,
     models: Vec<Handle<Scene>>,
     noises: NoiseFunctions,
