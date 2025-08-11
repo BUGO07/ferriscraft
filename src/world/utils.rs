@@ -1,6 +1,8 @@
+use std::collections::{HashMap, hash_map::Entry};
+
 use bevy::prelude::*;
 use bevy_renet::renet::RenetClient;
-use ferriscraft::{Block, ClientPacket, Direction};
+use ferriscraft::{Block, ClientPacket, Direction, SavedChunk};
 use noiz::{
     Noise,
     prelude::common_noise::{Fbm, Perlin, Simplex},
@@ -29,25 +31,25 @@ pub fn update_chunk(
 
 pub fn place_block(
     commands: &mut Commands,
-    client: &mut RenetClient,
-    // saved_chunks: &mut HashMap<IVec3, SavedChunk>,
+    client: Option<ResMut<RenetClient>>,
+    saved_chunks: &mut HashMap<IVec3, SavedChunk>,
     chunk: &mut Chunk,
     chunks: &Query<(Entity, &Transform), With<ChunkMarker>>,
     pos: IVec3,
     block: Block,
 ) {
     chunk.blocks[vec3_to_index(pos)] = block;
-    // match saved_chunks.entry(chunk.pos) {
-    //     Entry::Vacant(e) => {
-    //         e.insert(SavedChunk {
-    //             blocks: HashMap::from([(pos, block)]),
-    //             entities: chunk.entities.clone(),
-    //         });
-    //     }
-    //     Entry::Occupied(mut e) => {
-    //         e.get_mut().blocks.insert(pos, block);
-    //     }
-    // }
+    match saved_chunks.entry(chunk.pos) {
+        Entry::Vacant(e) => {
+            e.insert(SavedChunk {
+                blocks: HashMap::from([(pos, block)]),
+                entities: chunk.entities.clone(),
+            });
+        }
+        Entry::Occupied(mut e) => {
+            e.get_mut().blocks.insert(pos, block);
+        }
+    }
     if pos.x == 0 {
         update_chunk(commands, chunks, chunk.pos - IVec3::X);
     }

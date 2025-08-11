@@ -29,7 +29,7 @@ impl Plugin for PlayerPlugin {
         app.add_systems(
             Update,
             (camera_movement, handle_interactions)
-                .run_if(in_state(GameState::MultiPlayer))
+                .run_if(in_state(GameState::MultiPlayer).or(in_state(GameState::SinglePlayer)))
                 .in_set(PausableSystems),
         )
         .add_systems(
@@ -77,7 +77,7 @@ fn setup(// mut commands: Commands,
 fn handle_interactions(
     mut commands: Commands,
     mut gizmos: Gizmos,
-    mut client: ResMut<RenetClient>,
+    client: Option<ResMut<RenetClient>>,
     game_info: Res<GameInfo>,
     player: Single<&Transform, (With<Player>, Without<PlayerCamera>)>,
     camera: Single<&GlobalTransform, (With<PlayerCamera>, Without<Player>)>,
@@ -103,8 +103,8 @@ fn handle_interactions(
             if let Some(chunk) = game_info.chunks.write().unwrap().get_mut(&chunk_pos) {
                 place_block(
                     &mut commands,
-                    &mut client,
-                    // &mut game_info.saved_chunks.write().unwrap(),
+                    client,
+                    &mut game_info.saved_chunks.write().unwrap(),
                     chunk,
                     &chunks,
                     local_pos,
@@ -144,8 +144,8 @@ fn handle_interactions(
                     if chunk.blocks[vec3_to_index(local_pos)] == Block::AIR {
                         place_block(
                             &mut commands,
-                            &mut client,
-                            // &mut game_info.saved_chunks.write().unwrap(),
+                            client,
+                            &mut game_info.saved_chunks.write().unwrap(),
                             chunk,
                             &chunks,
                             local_pos,
@@ -192,7 +192,7 @@ fn camera_movement(
 }
 
 fn player_movement(
-    client: ResMut<RenetClient>,
+    client: Option<ResMut<RenetClient>>,
     player: Single<(&mut Transform, &mut Player)>,
     keyboard: Res<ButtonInput<KeyCode>>,
     settings: Res<GameSettings>,
@@ -350,7 +350,7 @@ fn player_movement(
     transform.translation += player.velocity * delta;
 
     if player.velocity.length() > 0.0 {
-        ClientPacket::Move(transform.translation).send(client.into_inner());
+        ClientPacket::Move(transform.translation).send(client);
     }
 }
 

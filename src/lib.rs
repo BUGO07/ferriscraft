@@ -21,14 +21,16 @@ pub enum ClientPacket {
 }
 
 impl ClientPacket {
-    pub fn send(&mut self, client: &mut RenetClient) {
-        let channel = match self {
-            ClientPacket::ChatMessage(_) => DefaultChannel::ReliableOrdered,
-            ClientPacket::PlaceBlock(_, _) => DefaultChannel::ReliableOrdered,
-            ClientPacket::Move(_) => DefaultChannel::Unreliable,
-        };
+    pub fn send(&mut self, client: Option<ResMut<RenetClient>>) {
+        if let Some(mut client) = client {
+            let channel = match self {
+                ClientPacket::ChatMessage(_) => DefaultChannel::ReliableOrdered,
+                ClientPacket::PlaceBlock(_, _) => DefaultChannel::ReliableOrdered,
+                ClientPacket::Move(_) => DefaultChannel::Unreliable,
+            };
 
-        client.send_message(channel, bincode::serialize(self).unwrap());
+            client.send_message(channel, bincode::serialize(self).unwrap());
+        }
     }
 }
 
@@ -53,7 +55,7 @@ pub struct SavedChunk {
 #[derive(Resource, Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SavedWorld(
     pub u32,
-    // transform, velocity, yaw, pitch
+    // name, (transform, velocity, yaw, pitch)
     pub HashMap<String, (Vec3, Vec3, f32, f32)>,
     pub HashMap<IVec3, SavedChunk>,
 );
