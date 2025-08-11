@@ -26,13 +26,14 @@ use bevy::{
     window::{ExitCondition, PresentMode, PrimaryWindow, WindowMode},
 };
 use bevy_framepace::FramepacePlugin;
-use ferriscraft::{BlockKind, GameEntity, GameEntityKind};
+use ferriscraft::{BlockKind, GameEntity, GameEntityKind, SavedChunk};
 
 use crate::{
     multiplayer::client::MultiplayerPlugin,
     player::{Player, PlayerCamera, PlayerPlugin},
     render_pipeline::{PostProcessSettings, RenderPipelinePlugin},
-    ui::UIPlugin,
+    singleplayer::SinglePlayerPlugin,
+    ui::{GameState, MenuState, UIPlugin},
     utils::toggle_grab_cursor,
     world::{Chunk, WorldPlugin, utils::NoiseFunctions},
 };
@@ -40,6 +41,7 @@ use crate::{
 mod multiplayer;
 mod player;
 mod render_pipeline;
+mod singleplayer;
 mod ui;
 mod utils;
 mod world;
@@ -81,6 +83,7 @@ fn main() {
             FramepacePlugin,
         ))
         .add_plugins((
+            SinglePlayerPlugin,
             MultiplayerPlugin,
             WorldPlugin,
             PlayerPlugin,
@@ -121,9 +124,28 @@ fn main() {
         .add_systems(
             Update,
             (|mut game_settings: ResMut<GameSettings>,
-              mut window: Single<&mut Window, With<PrimaryWindow>>| {
-                game_settings.paused = !game_settings.paused;
-                toggle_grab_cursor(&mut window);
+              mut window: Single<&mut Window, With<PrimaryWindow>>,
+              game_state: Res<State<GameState>>,
+              menu_state: Res<State<MenuState>>,
+              mut next_menu_state: ResMut<NextState<MenuState>>| {
+                if game_state.get() == &GameState::Menu {
+                    match menu_state.get() {
+                        MenuState::Main => {
+                            // game_settings.paused = !game_settings.paused;
+                            // toggle_grab_cursor(&mut window);
+                        }
+                        MenuState::MultiPlayer => {
+                            next_menu_state.set(MenuState::Main);
+                        }
+                        MenuState::SinglePlayer => {
+                            next_menu_state.set(MenuState::Main);
+                        }
+                        _ => {}
+                    }
+                } else {
+                    game_settings.paused = !game_settings.paused;
+                    toggle_grab_cursor(&mut window);
+                }
             })
             .run_if(input_just_pressed(KeyCode::Escape)),
         )
@@ -142,6 +164,7 @@ const SEA_LEVEL: i32 = 64; // MAX CHUNK_HEIGHT - 180
 struct GameInfo {
     chunks: Arc<RwLock<HashMap<IVec3, Chunk>>>,
     loading_chunks: Arc<RwLock<HashSet<IVec3>>>,
+    saved_chunks: Arc<RwLock<HashMap<IVec3, SavedChunk>>>,
     materials: Vec<Handle<StandardMaterial>>,
     models: Vec<Handle<Scene>>,
     noises: NoiseFunctions,

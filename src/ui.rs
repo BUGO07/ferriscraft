@@ -1,4 +1,7 @@
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::{
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    path::Path,
+};
 
 use bevy::{
     diagnostic::{
@@ -17,8 +20,11 @@ use ferriscraft::{BlockKind, DEFAULT_SERVER_PORT};
 use iyes_perf_ui::{PerfUiPlugin, prelude::PerfUiEntryFPS};
 
 use crate::{
-    CHUNK_SIZE, GameInfo, GameSettings, PausableSystems, multiplayer::client::MultiplayerMenuInput,
-    player::Player, world::utils::terrain_noise,
+    CHUNK_SIZE, GameInfo, GameSettings, PausableSystems,
+    multiplayer::client::MultiplayerMenuInput,
+    player::Player,
+    singleplayer::{SPNewWorld, SPSavedWorld},
+    world::utils::terrain_noise,
 };
 
 pub struct UIPlugin;
@@ -32,14 +38,8 @@ impl Plugin for UIPlugin {
             SystemInformationDiagnosticsPlugin,
             PerfUiPlugin,
             EguiPlugin::default(),
-            WorldInspectorPlugin::default().run_if(
-                in_state(GameState::MultiPlayer)
-                    .and(|game_settings: Res<GameSettings>| game_settings.paused),
-            ),
-            ResourceInspectorPlugin::<GameSettings>::default().run_if(
-                in_state(GameState::MultiPlayer)
-                    .and(|game_settings: Res<GameSettings>| game_settings.paused),
-            ),
+            WorldInspectorPlugin::default(),
+            ResourceInspectorPlugin::<GameSettings>::default(),
         ))
         .add_observer(
             |trigger: Trigger<Pointer<Released>>,
@@ -67,6 +67,7 @@ impl Plugin for UIPlugin {
         .add_systems(Startup, setup)
         .add_systems(OnEnter(MenuState::Main), main_menu)
         .add_systems(OnEnter(MenuState::SinglePlayer), singleplayer_menu)
+        .add_systems(OnEnter(MenuState::SinglePlayerNewWorld), sp_new_world_menu)
         .add_systems(OnEnter(MenuState::MultiPlayer), multiplayer_menu)
         .add_systems(Update, (handle_buttons, handle_textboxes))
         .add_systems(Update, handle_hud.in_set(PausableSystems));
@@ -95,6 +96,7 @@ pub enum MenuState {
     #[default]
     Main,
     SinglePlayer,
+    SinglePlayerNewWorld,
     MultiPlayer,
 }
 
@@ -131,7 +133,87 @@ fn singleplayer_menu(mut commands: Commands) {
         .insert(StateScoped(MenuState::SinglePlayer))
         .id();
 
+    let mut world_count = 0;
+
+    if let Ok(dir) = Path::new("saves").read_dir() {
+        for i in dir {
+            if let Ok(entry) = i
+                && let Ok(ft) = entry.file_type()
+                && ft.is_file()
+            {
+                let mut name = entry.file_name().to_string_lossy().to_string();
+                if name.ends_with(".ferris") {
+                    name = name.replace(".ferris", "");
+                    commands
+                    .spawn(button(&name, ui))
+                    .observe(
+                        move |_trigger: Trigger<Pointer<Released>>,
+                              mut commands: Commands,
+                              mut menu_state: ResMut<NextState<MenuState>>,
+                              mut game_state: ResMut<NextState<GameState>>| {
+                            commands.insert_resource(SPSavedWorld(name.clone()));
+                            menu_state.set(MenuState::None);
+                            game_state.set(GameState::SinglePlayer);
+                        },
+                    );
+                    world_count += 1;
+                }
+            }
+        }
+    }
+
+    if world_count == 0 {
+        commands.spawn((Text::new("No saves found"), ChildOf(ui)));
+    }
+
+    commands.spawn(button("Create New", ui)).observe(
+        |_trigger: Trigger<Pointer<Released>>, mut state: ResMut<NextState<MenuState>>| {
+            state.set(MenuState::SinglePlayerNewWorld);
+        },
+    );
+}
+
+fn sp_new_world_menu(mut commands: Commands) {
+    let ui = commands
+        .spawn(ui_bundle())
+        .insert(StateScoped(MenuState::SinglePlayerNewWorld))
+        .id();
+
     commands.spawn(text_box("World Name", ui));
+    commands.spawn(text_box("Seed", ui));
+    commands.spawn(button("Create", ui)).observe(
+        |_trigger: Trigger<Pointer<Released>>,
+         mut commands: Commands,
+         mut menu_state: ResMut<NextState<MenuState>>,
+         mut game_state: ResMut<NextState<GameState>>,
+         textbox: Query<&mut TextBox>| {
+            let mut name = String::new();
+            let mut seed = String::new();
+            for t in textbox.iter() {
+                if t.2 == "World Name" {
+                    name = t.1.clone();
+                }
+                if t.2 == "Seed" {
+                    seed = t.1.clone();
+                }
+            }
+            if !name.is_empty() && !Path::new("saves").join(format!("{}.ferris", name)).exists() {
+                if seed.is_empty() {
+                    commands.insert_resource(SPNewWorld(name, rand::random()));
+                    menu_state.set(MenuState::None);
+                    game_state.set(GameState::SinglePlayer);
+                } else if let Ok(seed) = seed.parse::<u32>() {
+                    commands.insert_resource(SPNewWorld(name, seed));
+                    menu_state.set(MenuState::None);
+                    game_state.set(GameState::SinglePlayer);
+                } else {
+                    println!("Seed must be a valid number");
+                }
+            } else {
+                println!("World by the name {} already exists", name);
+            }
+        },
+    );
     commands.spawn(button("Back", ui)).observe(
         |_trigger: Trigger<Pointer<Released>>, mut state: ResMut<NextState<MenuState>>| {
             state.set(MenuState::Main);

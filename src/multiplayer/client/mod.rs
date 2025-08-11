@@ -112,6 +112,7 @@ fn on_connect(
                 33.5_f32.to_radians(),
                 -47.3_f32.to_radians(),
             )),
+            StateScoped(GameState::MultiPlayer),
         ));
 
         let player_velocity = Vec3::ZERO;
@@ -125,6 +126,7 @@ fn on_connect(
                 player_yaw,
                 &game_info.noises,
             ))
+            .insert(StateScoped(GameState::MultiPlayer))
             .id();
 
         commands
@@ -136,7 +138,9 @@ fn on_connect(
                 player_pitch,
             ));
 
-        commands.spawn(PerfUiAllEntries::default());
+        commands
+            .spawn(PerfUiAllEntries::default())
+            .insert(StateScoped(GameState::MultiPlayer));
 
         let ui = commands
             .spawn(ui_bundle())
@@ -163,15 +167,15 @@ fn on_connect(
 }
 
 fn send_client_data(
-    mut client: ResMut<RenetClient>,
     mut app_exit: EventWriter<AppExit>,
+    client: ResMut<RenetClient>,
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
     if client.is_disconnected() {
         app_exit.write(AppExit::Success);
     }
     if keyboard.just_pressed(KeyCode::KeyT) {
-        ClientPacket::ChatMessage("shice".into()).send(&mut client);
+        ClientPacket::ChatMessage("shice".into()).send(Some(client));
     }
 }
 

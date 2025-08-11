@@ -1,3 +1,5 @@
+use std::collections::hash_map::Entry;
+
 use bevy::{
     asset::RenderAssetUsages,
     prelude::*,
@@ -8,13 +10,14 @@ use bevy::{
     tasks::{AsyncComputeTaskPool, futures_lite::future},
     window::PrimaryWindow,
 };
+use bevy_persistent::Persistent;
 use bevy_renet::renet::RenetClient;
-use ferriscraft::{GameEntity, GameEntityKind};
+use ferriscraft::{GameEntity, GameEntityKind, SavedChunk, SavedWorld};
 use rayon::slice::ParallelSliceMut;
 
 use crate::{
     CHUNK_HEIGHT, CHUNK_SIZE, GameInfo, GameSettings, SEA_LEVEL,
-    player::Player,
+    player::{Player, PlayerCamera},
     utils::{TREE_OBJECT, noise, vec3_to_index},
     world::{
         Chunk, ChunkMarker, ComputeChunk, ComputeChunkMesh,
@@ -24,46 +27,70 @@ use crate::{
 };
 
 pub fn autosave_and_exit(
-    // mut persistent_world: ResMut<Persistent<SavedWorld>>,
     mut app_exit: EventWriter<AppExit>,
-    mut last_time: Local<f32>,
-    mut client: ResMut<RenetClient>,
+    mut last_save: Local<f32>,
+    persistent_world: Option<ResMut<Persistent<SavedWorld>>>,
+    client: Option<ResMut<RenetClient>>,
     window: Query<&Window, With<PrimaryWindow>>,
-    // player: Single<(&Transform, &Player)>,
-    // camera: Single<&Transform, With<PlayerCamera>>,
+    player: Single<(&Transform, &Player)>,
+    camera: Single<&Transform, With<PlayerCamera>>,
     game_settings: Res<GameSettings>,
-    // game_info: Res<GameInfo>,
+    game_info: Res<GameInfo>,
     time: Res<Time>,
 ) {
     if window.single().is_err() {
         info!("saving and exiting");
-        // save_game(
-        //     &mut persistent_world,
-        //     player.0,
-        //     &camera,
-        //     player.1.velocity,
-        //     &game_info,
-        // );
-        client.disconnect();
+        save_game(
+            persistent_world,
+            player.0,
+            &camera,
+            player.1.velocity,
+            &game_info,
+        );
+        if let Some(mut client) = client {
+            client.disconnect();
+        }
         app_exit.write(AppExit::Success);
         return;
     }
 
     let elapsed = time.elapsed_secs_wrapped();
 
-    if game_settings.autosave && elapsed > *last_time + 60.0 {
-        // save_game(
-        //     &mut persistent_world,
-        //     player.0,
-        //     &camera,
-        //     player.1.velocity,
-        //     &game_info,
-        // );
-        *last_time = elapsed;
+    if game_settings.autosave && elapsed > *last_save + 60.0 {
+        save_game(
+            persistent_world,
+            player.0,
+            &camera,
+            player.1.velocity,
+            &game_info,
+        );
+        *last_save = elapsed;
     }
 
-    if elapsed < *last_time {
-        *last_time = elapsed;
+    if elapsed < *last_save {
+        *last_save = elapsed;
+    }
+}
+
+pub fn save_game(
+    persistent_world: Option<ResMut<Persistent<SavedWorld>>>,
+    player: &Transform,
+    camera: &Transform,
+    velocity: Vec3,
+    game_info: &GameInfo,
+) {
+    if let Some(mut persistent_world) = persistent_world {
+        persistent_world
+            .update(|sc| {
+                let (_, pitch, _) = camera.rotation.to_euler(EulerRot::YXZ);
+                let (yaw, _, _) = player.rotation.to_euler(EulerRot::YXZ);
+                sc.1.insert(
+                    "Player".to_string(),
+                    (player.translation, velocity, yaw, pitch),
+                );
+                sc.2 = game_info.saved_chunks.read().unwrap().clone();
+            })
+            .unwrap();
     }
 }
 
@@ -107,7 +134,7 @@ pub fn handle_chunk_gen(
             }
 
             let chunks = game_info.chunks.clone();
-            // let saved_chunks = game_info.saved_chunks.clone();
+            let saved_chunks = game_info.saved_chunks.clone();
 
             let task = thread_pool.spawn(async move {
                 let mut chunk = Chunk::new(pos);
@@ -178,12 +205,12 @@ pub fn handle_chunk_gen(
                     }
                 }
 
-                // if let Some(saved_chunk) = saved_chunks.read().unwrap().get(&pos) {
-                //     for (&pos, &block) in &saved_chunk.blocks {
-                //         chunk.blocks[vec3_to_index(pos)] = block;
-                //     }
-                //     chunk.entities = saved_chunk.entities.clone();
-                // }
+                if let Some(saved_chunk) = saved_chunks.read().unwrap().get(&pos) {
+                    for (&pos, &block) in &saved_chunk.blocks {
+                        chunk.blocks[vec3_to_index(pos)] = block;
+                    }
+                    chunk.entities = saved_chunk.entities.clone();
+                }
                 chunk
             });
             commands.spawn(ComputeChunk(task, pos));
@@ -280,7 +307,7 @@ pub fn process_tasks(
     tasks.par_sort_by_cached_key(|(_, x)| x.1.distance_squared(pt));
 
     let mut chunks = game_info.chunks.write().unwrap();
-    // let mut saved_chunks = game_info.saved_chunks.write().unwrap();
+    let mut saved_chunks = game_info.saved_chunks.write().unwrap();
     let mut loading_chunks = game_info.loading_chunks.write().unwrap();
 
     let mut processed_this_frame = 0;
@@ -290,20 +317,20 @@ pub fn process_tasks(
         }
         if let Some(mut chunk) = future::block_on(future::poll_once(&mut compute_task.0)) {
             {
-                // match saved_chunks.entry(chunk.pos) {
-                //     Entry::Vacant(e) => {
-                //         e.insert(SavedChunk {
-                //             entities: chunk.entities.clone(),
-                //             ..default()
-                //         });
-                //     }
-                //     Entry::Occupied(mut e) => {
-                //         let saved_chunk = e.get_mut();
-                //         if saved_chunk.entities != chunk.entities {
-                //             saved_chunk.entities = chunk.entities.clone();
-                //         }
-                //     }
-                // }
+                match saved_chunks.entry(chunk.pos) {
+                    Entry::Vacant(e) => {
+                        e.insert(SavedChunk {
+                            entities: chunk.entities.clone(),
+                            ..default()
+                        });
+                    }
+                    Entry::Occupied(mut e) => {
+                        let saved_chunk = e.get_mut();
+                        if saved_chunk.entities != chunk.entities {
+                            saved_chunk.entities = chunk.entities.clone();
+                        }
+                    }
+                }
             }
 
             for (e, game_entity) in &mut chunk.entities {
