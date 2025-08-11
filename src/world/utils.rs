@@ -2,14 +2,14 @@ use std::collections::{HashMap, hash_map::Entry};
 
 use bevy::prelude::*;
 use bevy_renet::renet::RenetClient;
-use ferriscraft::{Block, ClientPacket, Direction, SavedChunk};
+use ferriscraft::{Block, ClientPacket, Direction, SEA_LEVEL, SavedChunk};
 use noiz::{
     Noise,
     prelude::common_noise::{Fbm, Perlin, Simplex},
 };
 
 use crate::{
-    CHUNK_SIZE, GameInfo, SEA_LEVEL,
+    CHUNK_SIZE, GameInfo,
     utils::{noise, vec3_to_index},
     world::{Chunk, ChunkMarker},
 };

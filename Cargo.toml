@@ -18,7 +18,7 @@ bevy = { version = "0.16.1", features = ["dynamic_linking", "file_watcher", "way
 bevy-inspector-egui = "0.32.0"
 bevy-persistent = { version = "0.8.0", features = ["bincode"] }
 bevy_framepace = "0.19.1"
-bevy_renet = { git = "https://github.com/lucaspoffo/renet", version = "1.0.0" }
+bevy_renet = "2.0.0"
 chrono = "0.4.41"
 iyes_perf_ui = "0.5.0"
 noiz = "0.2.0"
@@ -29,7 +29,7 @@ bincode = "*"
 
 [[bin]]
 name = "server"
-path = "src/multiplayer/server.rs"
+path = "src/multiplayer/server/main.rs"
 
 [[bin]]
 name = "client"

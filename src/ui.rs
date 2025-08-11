@@ -4,13 +4,16 @@ use std::{
 };
 
 use bevy::{
+    core_pipeline::{Skybox, bloom::Bloom, experimental::taa::TemporalAntiAliasing},
     diagnostic::{
         EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin,
         SystemInformationDiagnosticsPlugin,
     },
     input::{ButtonState, keyboard::KeyboardInput, mouse::MouseWheel},
+    pbr::ScreenSpaceAmbientOcclusion,
     prelude::*,
     render::diagnostic::RenderDiagnosticsPlugin,
+    window::PrimaryWindow,
 };
 use bevy_inspector_egui::{
     bevy_egui::EguiPlugin,
@@ -22,8 +25,10 @@ use iyes_perf_ui::{PerfUiPlugin, prelude::PerfUiEntryFPS};
 use crate::{
     CHUNK_SIZE, GameInfo, GameSettings, PausableSystems,
     multiplayer::client::MultiplayerMenuInput,
-    player::Player,
+    player::{Player, PlayerCamera},
+    render_pipeline::PostProcessSettings,
     singleplayer::{SPNewWorld, SPSavedWorld},
+    utils::set_cursor_grab,
     world::utils::terrain_noise,
 };
 
@@ -84,9 +89,19 @@ impl Plugin for UIPlugin {
         .add_systems(OnEnter(MenuState::SinglePlayer), singleplayer_menu)
         .add_systems(OnEnter(MenuState::SinglePlayerNewWorld), sp_new_world_menu)
         .add_systems(OnEnter(MenuState::MultiPlayer), multiplayer_menu)
+        .add_systems(OnEnter(GameState::Menu), ungrab_cursor)
+        .add_systems(OnExit(GameState::Menu), grab_cursor)
         .add_systems(Update, (handle_buttons, handle_textboxes))
         .add_systems(Update, handle_hud.in_set(PausableSystems));
     }
+}
+
+fn ungrab_cursor(mut window: Single<&mut Window, With<PrimaryWindow>>) {
+    set_cursor_grab(&mut window, false);
+}
+
+fn grab_cursor(mut window: Single<&mut Window, With<PrimaryWindow>>) {
+    set_cursor_grab(&mut window, true);
 }
 
 #[derive(Component)]
@@ -121,8 +136,20 @@ pub struct ErrorText;
 #[derive(Component)]
 pub struct SavedWorldMarker(pub bool);
 
-fn setup(mut commands: Commands) {
-    commands.spawn(Camera3d::default());
+fn setup(mut commands: Commands, camera: Query<Entity, With<Camera>>) {
+    if let Ok(camera) = camera.single() {
+        // idfk what im doing at this point
+        commands.entity(camera).remove::<(
+            TemporalAntiAliasing,
+            PostProcessSettings,
+            Skybox,
+            Bloom,
+            ScreenSpaceAmbientOcclusion,
+            PlayerCamera,
+        )>();
+    } else {
+        commands.spawn(Camera3d::default());
+    }
 }
 
 fn main_menu(mut commands: Commands) {

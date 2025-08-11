@@ -33,7 +33,28 @@ impl Plugin for WorldPlugin {
                         .run_if(|game_settings: Res<GameSettings>| game_settings.despawn_chunks),
                     process_tasks,
                 )
-                    .run_if(in_state(GameState::MultiPlayer).or(in_state(GameState::SinglePlayer))),
+                    .run_if(not(in_state(GameState::Menu))),
+            )
+            .add_systems(
+                Update,
+                |mut commands: Commands,
+                 mut transitions: EventReader<StateTransitionEvent<GameState>>,
+                 query: Query<Entity, With<ChunkMarker>>| {
+                    let Some(transition) = transitions.read().last() else {
+                        return;
+                    };
+                    if transition.entered == transition.exited {
+                        return;
+                    }
+                    let Some(entered) = &transition.entered else {
+                        return;
+                    };
+                    if *entered == GameState::Menu {
+                        for entity in &query {
+                            commands.entity(entity).despawn();
+                        }
+                    }
+                },
             );
     }
 }

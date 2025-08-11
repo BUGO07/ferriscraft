@@ -13,7 +13,7 @@ use crate::{
     GameInfo,
     player::{camera_bundle, player_bundle},
     ui::{GameState, coords_bundle, hotbar_block, hotbar_bundle, root_ui_bundle},
-    utils::{get_noise_functions, toggle_grab_cursor},
+    utils::{get_noise_functions, set_cursor_grab},
 };
 
 pub struct SinglePlayerPlugin;
@@ -36,7 +36,7 @@ fn setup(
     mut window: Single<&mut Window, With<PrimaryWindow>>,
     new_world: Option<Res<SPNewWorld>>,
     saved_world: Option<Res<SPSavedWorld>>,
-    camera: Single<(Entity, &mut Camera3d)>,
+    camera: Single<Entity, With<Camera3d>>,
     asset_server: Res<AssetServer>,
 ) {
     let persistent = if let Some(new_world) = new_world {
@@ -81,7 +81,7 @@ fn setup(
         ..default()
     };
 
-    toggle_grab_cursor(&mut window);
+    set_cursor_grab(&mut window, true);
 
     // godray lights when?
     commands.spawn((
@@ -115,7 +115,7 @@ fn setup(
         .id();
 
     commands
-        .entity(camera.0)
+        .entity(*camera)
         .remove::<Camera3d>()
         .insert(camera_bundle(
             asset_server.load("skybox.ktx2"),

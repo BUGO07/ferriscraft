@@ -5,13 +5,20 @@
     clippy::vec_init_then_push
 )]
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    hash::{DefaultHasher, Hasher},
+};
 
 use bevy::prelude::*;
 use bevy_renet::renet::{DefaultChannel, RenetClient};
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_SERVER_PORT: u16 = 42069;
+
+pub const CHUNK_SIZE: i32 = 16; // MAX 63
+pub const CHUNK_HEIGHT: i32 = 256; // MAX 511
+pub const SEA_LEVEL: i32 = 64; // MAX CHUNK_HEIGHT - 180
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ClientPacket {
@@ -41,6 +48,13 @@ pub enum ServerPacket {
     ClientDisconnected(u64, String),          // id, reason
     ConnectionInfo(u32, Vec3),                // seed, pos
     PlayerData(HashMap<u64, (String, Vec3)>), // id, (name, pos)
+}
+
+#[inline]
+pub fn hash(value: impl std::hash::Hash) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[derive(Resource, Default, Clone)]

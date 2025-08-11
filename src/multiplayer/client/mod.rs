@@ -9,16 +9,16 @@ use bevy_renet::{
     netcode::{
         ClientAuthentication, NETCODE_USER_DATA_BYTES, NetcodeClientPlugin, NetcodeClientTransport,
     },
-    renet::{ConnectionConfig, DefaultChannel, RenetClient},
+    renet::{ConnectionConfig, DefaultChannel, DisconnectReason, RenetClient},
 };
-use ferriscraft::{BlockKind, ClientPacket, ServerPacket};
+use ferriscraft::{BlockKind, ClientPacket, ServerPacket, hash};
 use iyes_perf_ui::prelude::PerfUiAllEntries;
 
 use crate::{
     GameInfo,
     player::{OnlinePlayer, camera_bundle, player_bundle},
-    ui::{GameState, coords_bundle, hotbar_block, hotbar_bundle, root_ui_bundle},
-    utils::{get_noise_functions, toggle_grab_cursor},
+    ui::{GameState, MenuState, coords_bundle, hotbar_block, hotbar_bundle, root_ui_bundle},
+    utils::{get_noise_functions, set_cursor_grab},
 };
 
 pub struct MultiplayerPlugin;
@@ -26,11 +26,11 @@ pub struct MultiplayerPlugin;
 impl Plugin for MultiplayerPlugin {
     fn build(&self, app: &mut bevy::prelude::App) {
         app.add_plugins((RenetClientPlugin, NetcodeClientPlugin))
-            .add_event::<ServerConnect>()
+            .add_event::<ClientEvent>()
             .add_systems(OnEnter(GameState::MultiPlayer), setup)
             .add_systems(
                 Update,
-                (on_connect, send_client_data, receive_server_data)
+                (client_event_handler, send_client_data, receive_server_data)
                     .run_if(in_state(GameState::MultiPlayer)),
             );
     }
@@ -48,6 +48,8 @@ fn setup(mut commands: Commands, multiplayer_input: Res<MultiplayerMenuInput>) {
     //     .unwrap_or(format!("Player {}", rand::random_range(0..1000)));
     let bytes = multiplayer_input.1.as_bytes();
     user_data[..bytes.len()].copy_from_slice(bytes);
+    commands.remove_resource::<RenetClient>();
+    commands.remove_resource::<NetcodeClientTransport>();
     commands.insert_resource(RenetClient::new(ConnectionConfig::default()));
     commands.insert_resource(
         NetcodeClientTransport::new(
@@ -58,7 +60,7 @@ fn setup(mut commands: Commands, multiplayer_input: Res<MultiplayerMenuInput>) {
                 server_addr: multiplayer_input.0,
                 client_id,
                 user_data: Some(user_data),
-                protocol_id: 0,
+                protocol_id: hash(env!("CARGO_PKG_VERSION")),
             },
             UdpSocket::bind("0.0.0.0:0").unwrap(),
         )
@@ -67,112 +69,132 @@ fn setup(mut commands: Commands, multiplayer_input: Res<MultiplayerMenuInput>) {
 }
 
 #[derive(Event)]
-pub struct ServerConnect(pub u32, pub Vec3);
+pub enum ClientEvent {
+    Connected(u32, Vec3), // seed, pos
+    Disconnected(DisconnectReason),
+}
 
-fn on_connect(
+fn client_event_handler(
     mut commands: Commands,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut window: Single<&mut Window, With<PrimaryWindow>>,
-    mut connect_event: EventReader<ServerConnect>,
+    mut connect_event: EventReader<ClientEvent>,
     // persistent_world: Res<Persistent<SavedWorld>>,
+    mut game_state: ResMut<NextState<GameState>>,
+    mut menu_state: ResMut<NextState<MenuState>>,
     camera: Single<(Entity, &mut Camera3d)>,
     asset_server: Res<AssetServer>,
 ) {
-    for &ServerConnect(seed, pos) in connect_event.read() {
-        info!("Connected to server");
-        let mut mats = Vec::new();
-        mats.push(materials.add(StandardMaterial {
-            base_color_texture: Some(asset_server.load("atlas.ktx2")),
-            reflectance: 0.0,
-            ..default()
-        }));
-        let mut models = Vec::new();
-        models.push(asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/ferris.glb")));
-
-        let game_info = GameInfo {
-            noises: get_noise_functions(seed),
-            materials: mats,
-            models,
-            current_block: BlockKind::Stone,
-            ..default()
-        };
-
-        toggle_grab_cursor(&mut window);
-
-        // godray lights when?
-        commands.spawn((
-            DirectionalLight {
-                illuminance: 5_000.0,
-                shadows_enabled: true,
-                ..default()
-            },
-            Transform::from_rotation(Quat::from_euler(
-                EulerRot::ZYX,
-                0.0,
-                33.5_f32.to_radians(),
-                -47.3_f32.to_radians(),
-            )),
-            StateScoped(GameState::MultiPlayer),
-        ));
-
-        let player_velocity = Vec3::ZERO;
-        let player_yaw = 0.0;
-        let player_pitch = 0.0;
-
-        let player = commands
-            .spawn(player_bundle(
-                pos,
-                player_velocity,
-                player_yaw,
-                &game_info.noises,
-            ))
-            .insert(StateScoped(GameState::MultiPlayer))
-            .id();
-
-        commands
-            .entity(camera.0)
-            .remove::<Camera3d>()
-            .insert(camera_bundle(
-                asset_server.load("skybox.ktx2"),
-                player,
-                player_pitch,
-            ));
-
-        commands
-            .spawn(PerfUiAllEntries::default())
-            .insert(StateScoped(GameState::MultiPlayer));
-
-        let ui = commands
-            .spawn(root_ui_bundle())
-            .insert(StateScoped(GameState::MultiPlayer))
-            .id();
-
-        commands.spawn(coords_bundle(ui));
-
-        let hotbar = commands.spawn(hotbar_bundle(ui)).id();
-
-        let node = ImageNode::new(asset_server.load("atlas.png"));
-
-        for i in 1..=10 {
-            if i == BlockKind::Water as u8 {
-                continue;
+    for event in connect_event.read() {
+        match event {
+            ClientEvent::Disconnected(_reason) => {
+                info!("Disconnected from the server");
+                // idfk it doesnt properly work without doing this
+                commands.entity(camera.0).remove::<ChildOf>();
+                game_state.set(GameState::Menu);
+                menu_state.set(MenuState::MultiPlayer);
             }
+            &ClientEvent::Connected(seed, pos) => {
+                info!("Connected to server");
+                let mut mats = Vec::new();
+                mats.push(materials.add(StandardMaterial {
+                    base_color_texture: Some(asset_server.load("atlas.ktx2")),
+                    reflectance: 0.0,
+                    ..default()
+                }));
+                let mut models = Vec::new();
+                models.push(
+                    asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/ferris.glb")),
+                );
 
-            commands.spawn(hotbar_block(hotbar, node.clone(), i));
+                let game_info = GameInfo {
+                    noises: get_noise_functions(seed),
+                    materials: mats,
+                    models,
+                    current_block: BlockKind::Stone,
+                    ..default()
+                };
+
+                set_cursor_grab(&mut window, true);
+
+                // godray lights when?
+                commands.spawn((
+                    DirectionalLight {
+                        illuminance: 5_000.0,
+                        shadows_enabled: true,
+                        ..default()
+                    },
+                    Transform::from_rotation(Quat::from_euler(
+                        EulerRot::ZYX,
+                        0.0,
+                        33.5_f32.to_radians(),
+                        -47.3_f32.to_radians(),
+                    )),
+                    StateScoped(GameState::MultiPlayer),
+                ));
+
+                let player_velocity = Vec3::ZERO;
+                let player_yaw = 0.0;
+                let player_pitch = 0.0;
+
+                let player = commands
+                    .spawn(player_bundle(
+                        pos,
+                        player_velocity,
+                        player_yaw,
+                        &game_info.noises,
+                    ))
+                    .insert(StateScoped(GameState::MultiPlayer))
+                    .id();
+
+                commands
+                    .entity(camera.0)
+                    .remove::<Camera3d>()
+                    .insert(camera_bundle(
+                        asset_server.load("skybox.ktx2"),
+                        player,
+                        player_pitch,
+                    ));
+
+                commands
+                    .spawn(PerfUiAllEntries::default())
+                    .insert(StateScoped(GameState::MultiPlayer));
+
+                let ui = commands
+                    .spawn(root_ui_bundle())
+                    .insert(StateScoped(GameState::MultiPlayer))
+                    .id();
+
+                commands.spawn(coords_bundle(ui));
+
+                let hotbar = commands.spawn(hotbar_bundle(ui)).id();
+
+                let node = ImageNode::new(asset_server.load("atlas.png"));
+
+                for i in 1..=10 {
+                    if i == BlockKind::Water as u8 {
+                        continue;
+                    }
+
+                    commands.spawn(hotbar_block(hotbar, node.clone(), i));
+                }
+
+                commands.insert_resource(game_info);
+            }
         }
-
-        commands.insert_resource(game_info);
     }
     // let &SavedWorld(seed, _, ref saved_chunks) = persistent_world.get();
 }
 
 fn send_client_data(
-    mut app_exit: EventWriter<AppExit>,
+    mut client_event: EventWriter<ClientEvent>,
     client: ResMut<RenetClient>,
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
     if client.is_disconnected() {
-        app_exit.write(AppExit::Success);
+        client_event.write(ClientEvent::Disconnected(
+            client.disconnect_reason().unwrap(),
+        ));
     }
     if keyboard.just_pressed(KeyCode::KeyT) {
         ClientPacket::ChatMessage("shice".into()).send(Some(client));
@@ -185,7 +207,7 @@ fn receive_server_data(
     mut players: Query<(Entity, &mut Transform, &OnlinePlayer)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut connect_event: EventWriter<ServerConnect>,
+    mut client_event: EventWriter<ClientEvent>,
     transport: Res<NetcodeClientTransport>,
 ) {
     while let Some(message) = client.receive_message(DefaultChannel::ReliableOrdered) {
@@ -215,7 +237,7 @@ fn receive_server_data(
                 println!("Client {id} disconnected: {reason}");
             }
             ServerPacket::ConnectionInfo(seed, pos) => {
-                connect_event.write(ServerConnect(seed, pos));
+                client_event.write(ClientEvent::Connected(seed, pos));
             }
             _ => {}
         }

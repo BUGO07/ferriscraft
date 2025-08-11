@@ -12,11 +12,11 @@ use bevy::{
 };
 use bevy_persistent::Persistent;
 use bevy_renet::renet::RenetClient;
-use ferriscraft::{GameEntity, GameEntityKind, SavedChunk, SavedWorld};
+use ferriscraft::{GameEntity, GameEntityKind, SEA_LEVEL, SavedChunk, SavedWorld};
 use rayon::slice::ParallelSliceMut;
 
 use crate::{
-    CHUNK_HEIGHT, CHUNK_SIZE, GameInfo, GameSettings, SEA_LEVEL,
+    CHUNK_HEIGHT, CHUNK_SIZE, GameInfo, GameSettings,
     player::{Player, PlayerCamera},
     utils::{TREE_OBJECT, noise, vec3_to_index},
     world::{
@@ -32,21 +32,25 @@ pub fn autosave_and_exit(
     persistent_world: Option<ResMut<Persistent<SavedWorld>>>,
     client: Option<ResMut<RenetClient>>,
     window: Query<&Window, With<PrimaryWindow>>,
-    player: Single<(&Transform, &Player)>,
-    camera: Single<&Transform, With<PlayerCamera>>,
+    player: Query<(&Transform, &Player)>,
+    camera: Query<&Transform, With<PlayerCamera>>,
     game_settings: Res<GameSettings>,
     game_info: Res<GameInfo>,
     time: Res<Time>,
 ) {
-    if window.single().is_err() {
+    if window.is_empty() {
         info!("saving and exiting");
-        save_game(
-            persistent_world,
-            player.0,
-            &camera,
-            player.1.velocity,
-            &game_info,
-        );
+        if let Ok(player) = player.single()
+            && let Ok(camera) = camera.single()
+        {
+            save_game(
+                persistent_world,
+                player.0,
+                camera,
+                player.1.velocity,
+                &game_info,
+            );
+        }
         if let Some(mut client) = client {
             client.disconnect();
         }
@@ -57,13 +61,17 @@ pub fn autosave_and_exit(
     let elapsed = time.elapsed_secs_wrapped();
 
     if game_settings.autosave && elapsed > *last_save + 60.0 {
-        save_game(
-            persistent_world,
-            player.0,
-            &camera,
-            player.1.velocity,
-            &game_info,
-        );
+        if let Ok(player) = player.single()
+            && let Ok(camera) = camera.single()
+        {
+            save_game(
+                persistent_world,
+                player.0,
+                camera,
+                player.1.velocity,
+                &game_info,
+            );
+        }
         *last_save = elapsed;
     }
 
