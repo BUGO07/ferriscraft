@@ -9,7 +9,7 @@ use noiz::{
 };
 
 use crate::{
-    CHUNK_SIZE, SEA_LEVEL,
+    CHUNK_SIZE, GameInfo, SEA_LEVEL,
     utils::{noise, vec3_to_index},
     world::{Chunk, ChunkMarker},
 };
@@ -32,22 +32,24 @@ pub fn update_chunk(
 pub fn place_block(
     commands: &mut Commands,
     client: Option<ResMut<RenetClient>>,
-    saved_chunks: &mut HashMap<IVec3, SavedChunk>,
+    saved_chunks: &GameInfo,
     chunk: &mut Chunk,
     chunks: &Query<(Entity, &Transform), With<ChunkMarker>>,
     pos: IVec3,
     block: Block,
 ) {
     chunk.blocks[vec3_to_index(pos)] = block;
-    match saved_chunks.entry(chunk.pos) {
-        Entry::Vacant(e) => {
-            e.insert(SavedChunk {
-                blocks: HashMap::from([(pos, block)]),
-                entities: chunk.entities.clone(),
-            });
-        }
-        Entry::Occupied(mut e) => {
-            e.get_mut().blocks.insert(pos, block);
+    if let Some(saved_chunks) = &saved_chunks.saved_chunks {
+        match saved_chunks.write().unwrap().entry(chunk.pos) {
+            Entry::Vacant(e) => {
+                e.insert(SavedChunk {
+                    blocks: HashMap::from([(pos, block)]),
+                    entities: chunk.entities.clone(),
+                });
+            }
+            Entry::Occupied(mut e) => {
+                e.get_mut().blocks.insert(pos, block);
+            }
         }
     }
     if pos.x == 0 {

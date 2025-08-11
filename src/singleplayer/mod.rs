@@ -1,4 +1,8 @@
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{Arc, RwLock},
+};
 
 use bevy::{prelude::*, window::PrimaryWindow};
 use bevy_persistent::{Persistent, StorageFormat};
@@ -8,7 +12,7 @@ use iyes_perf_ui::prelude::PerfUiAllEntries;
 use crate::{
     GameInfo,
     player::{camera_bundle, player_bundle},
-    ui::{GameState, coords_bundle, hotbar_block, hotbar_bundle, ui_bundle},
+    ui::{GameState, coords_bundle, hotbar_block, hotbar_bundle, root_ui_bundle},
     utils::{get_noise_functions, toggle_grab_cursor},
 };
 
@@ -38,7 +42,7 @@ fn setup(
     let persistent = if let Some(new_world) = new_world {
         let SPNewWorld(name, seed) = new_world.into_inner();
         Persistent::<SavedWorld>::builder()
-                .name(name)
+                .name("saved world")
                 .format(StorageFormat::Bincode)
                 .path(Path::new("saves").join(format!("{}.ferris", name)))
                 .default(SavedWorld(
@@ -51,7 +55,7 @@ fn setup(
     } else {
         let SPSavedWorld(name) = saved_world.unwrap().into_inner();
         Persistent::<SavedWorld>::builder()
-                .name(name)
+                .name("saved world")
                 .format(StorageFormat::Bincode)
                 .path(Path::new("saves").join(format!("{}.ferris", name)))
                 .default(SavedWorld::default())
@@ -72,6 +76,7 @@ fn setup(
         noises: get_noise_functions(persistent.0),
         materials: mats,
         models,
+        saved_chunks: Some(Arc::new(RwLock::new(persistent.2.clone()))),
         current_block: BlockKind::Stone,
         ..default()
     };
@@ -94,22 +99,14 @@ fn setup(
         StateScoped(GameState::SinglePlayer),
     ));
 
-    let player_velocity = Vec3::ZERO;
-    let player_yaw = 0.0;
-    let player_pitch = 0.0;
+    let &(player_pos, player_velocity, player_yaw, player_pitch) = persistent
+        .1
+        .get("Player")
+        .unwrap_or(&(Vec3::INFINITY, Vec3::ZERO, 0.0, 0.0));
 
     let player = commands
         .spawn(player_bundle(
-            persistent
-                .1
-                .iter()
-                .next()
-                .unwrap_or((
-                    &"Player".to_string(),
-                    &(Vec3::INFINITY, Vec3::ZERO, 0.0, 0.0),
-                ))
-                .1
-                .0,
+            player_pos,
             player_velocity,
             player_yaw,
             &game_info.noises,
@@ -131,7 +128,7 @@ fn setup(
         .insert(StateScoped(GameState::SinglePlayer));
 
     let ui = commands
-        .spawn(ui_bundle())
+        .spawn(root_ui_bundle())
         .insert(StateScoped(GameState::SinglePlayer))
         .id();
 
@@ -150,4 +147,5 @@ fn setup(
     }
 
     commands.insert_resource(game_info);
+    commands.insert_resource(persistent);
 }

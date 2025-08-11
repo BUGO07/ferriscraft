@@ -88,7 +88,9 @@ pub fn save_game(
                     "Player".to_string(),
                     (player.translation, velocity, yaw, pitch),
                 );
-                sc.2 = game_info.saved_chunks.read().unwrap().clone();
+                if let Some(saved_chunks) = &game_info.saved_chunks {
+                    sc.2 = saved_chunks.read().unwrap().clone();
+                }
             })
             .unwrap();
     }
@@ -205,7 +207,9 @@ pub fn handle_chunk_gen(
                     }
                 }
 
-                if let Some(saved_chunk) = saved_chunks.read().unwrap().get(&pos) {
+                if let Some(saved_chunks) = &saved_chunks
+                    && let Some(saved_chunk) = saved_chunks.read().unwrap().get(&pos)
+                {
                     for (&pos, &block) in &saved_chunk.blocks {
                         chunk.blocks[vec3_to_index(pos)] = block;
                     }
@@ -307,7 +311,10 @@ pub fn process_tasks(
     tasks.par_sort_by_cached_key(|(_, x)| x.1.distance_squared(pt));
 
     let mut chunks = game_info.chunks.write().unwrap();
-    let mut saved_chunks = game_info.saved_chunks.write().unwrap();
+    let mut saved_chunks = game_info
+        .saved_chunks
+        .as_ref()
+        .map(|saved_chunks| saved_chunks.write().unwrap());
     let mut loading_chunks = game_info.loading_chunks.write().unwrap();
 
     let mut processed_this_frame = 0;
@@ -316,7 +323,7 @@ pub fn process_tasks(
             break;
         }
         if let Some(mut chunk) = future::block_on(future::poll_once(&mut compute_task.0)) {
-            {
+            if let Some(saved_chunks) = &mut saved_chunks {
                 match saved_chunks.entry(chunk.pos) {
                     Entry::Vacant(e) => {
                         e.insert(SavedChunk {

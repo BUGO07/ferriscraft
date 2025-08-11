@@ -104,7 +104,7 @@ fn handle_interactions(
                 place_block(
                     &mut commands,
                     client,
-                    &mut game_info.saved_chunks.write().unwrap(),
+                    &game_info,
                     chunk,
                     &chunks,
                     local_pos,
@@ -145,7 +145,7 @@ fn handle_interactions(
                         place_block(
                             &mut commands,
                             client,
-                            &mut game_info.saved_chunks.write().unwrap(),
+                            &game_info,
                             chunk,
                             &chunks,
                             local_pos,
@@ -214,7 +214,7 @@ fn player_movement(
 
     if keyboard.pressed(KeyCode::KeyW) {
         if !sneaking && keyboard.pressed(KeyCode::ControlLeft) {
-            sprint_multiplier = 1.6;
+            sprint_multiplier = 1.3;
         }
         move_dir += forward;
     }
@@ -237,7 +237,7 @@ fn player_movement(
     );
 
     if sneaking {
-        target_velocity *= 0.5;
+        target_velocity *= 0.3;
 
         // if ray_cast(&game_info, transform.translation, -Vec3::Y, 0.2).is_none() {
         // TODO

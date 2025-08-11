@@ -57,8 +57,23 @@ impl Plugin for UIPlugin {
                         if text.0.ends_with("|") {
                             text.0.pop();
                         }
+                        if text.0.is_empty() {
+                            text.0 = textbox.2.clone();
+                        }
                         textbox.0 = false;
                     }
+                }
+            },
+        )
+        .add_observer(
+            |trigger: Trigger<Pointer<Released>>,
+             mut worldsaves: Query<(&mut SavedWorldMarker, Option<&Children>, Entity)>| {
+                for (mut marker, children_opt, entity) in worldsaves.iter_mut() {
+                    let clicked = trigger.target == entity
+                        || children_opt
+                            .map(|children| children.iter().any(|c| c == trigger.target))
+                            .unwrap_or(false);
+                    marker.0 = clicked;
                 }
             },
         )
@@ -100,38 +115,54 @@ pub enum MenuState {
     MultiPlayer,
 }
 
+#[derive(Component)]
+pub struct ErrorText;
+
+#[derive(Component)]
+pub struct SavedWorldMarker(pub bool);
+
 fn setup(mut commands: Commands) {
     commands.spawn(Camera3d::default());
 }
 
 fn main_menu(mut commands: Commands) {
     let ui = commands
-        .spawn(ui_bundle())
+        .spawn(root_ui_bundle())
         .insert(StateScoped(MenuState::Main))
         .id();
 
-    commands.spawn(button("SinglePlayer", ui)).observe(
-        |_trigger: Trigger<Pointer<Released>>, mut state: ResMut<NextState<MenuState>>| {
-            state.set(MenuState::SinglePlayer);
-        },
-    );
-    commands.spawn(button("MultiPlayer", ui)).observe(
-        |_trigger: Trigger<Pointer<Released>>, mut state: ResMut<NextState<MenuState>>| {
-            state.set(MenuState::MultiPlayer);
-        },
-    );
-    commands.spawn(button("Quit", ui)).observe(
-        |_trigger: Trigger<Pointer<Released>>, mut app_exit: EventWriter<AppExit>| {
-            app_exit.write(AppExit::Success);
-        },
-    );
+    let vertical = commands.spawn(vertical_ui_bundle(ui)).id();
+
+    commands
+        .spawn(button("SinglePlayer", vertical, 300.0, 60.0))
+        .observe(
+            |_trigger: Trigger<Pointer<Released>>, mut state: ResMut<NextState<MenuState>>| {
+                state.set(MenuState::SinglePlayer);
+            },
+        );
+    commands
+        .spawn(button("MultiPlayer", vertical, 300.0, 60.0))
+        .observe(
+            |_trigger: Trigger<Pointer<Released>>, mut state: ResMut<NextState<MenuState>>| {
+                state.set(MenuState::MultiPlayer);
+            },
+        );
+    commands
+        .spawn(button("Quit", vertical, 300.0, 60.0))
+        .observe(
+            |_trigger: Trigger<Pointer<Released>>, mut app_exit: EventWriter<AppExit>| {
+                app_exit.write(AppExit::Success);
+            },
+        );
 }
 
 fn singleplayer_menu(mut commands: Commands) {
     let ui = commands
-        .spawn(ui_bundle())
+        .spawn(root_ui_bundle())
         .insert(StateScoped(MenuState::SinglePlayer))
         .id();
+
+    let vertical = commands.spawn(vertical_ui_bundle(ui)).id();
 
     let mut world_count = 0;
 
@@ -145,17 +176,35 @@ fn singleplayer_menu(mut commands: Commands) {
                 if name.ends_with(".ferris") {
                     name = name.replace(".ferris", "");
                     commands
-                    .spawn(button(&name, ui))
-                    .observe(
-                        move |_trigger: Trigger<Pointer<Released>>,
-                              mut commands: Commands,
-                              mut menu_state: ResMut<NextState<MenuState>>,
-                              mut game_state: ResMut<NextState<GameState>>| {
-                            commands.insert_resource(SPSavedWorld(name.clone()));
-                            menu_state.set(MenuState::None);
-                            game_state.set(GameState::SinglePlayer);
-                        },
-                    );
+                        .spawn(button(&name, vertical, 500.0, 75.0))
+                        .insert(SavedWorldMarker(false))
+                        .observe(
+                            move |trigger: Trigger<Pointer<Pressed>>,
+                                  mut commands: Commands,
+                                  mut menu_state: ResMut<NextState<MenuState>>,
+                                  mut game_state: ResMut<NextState<GameState>>,
+                                  buttons: Query<(
+                                &SavedWorldMarker,
+                                Option<&Children>,
+                                Entity,
+                            )>| {
+                                for (marker, children_opt, entity) in buttons.iter() {
+                                    // shit way
+                                    let pressed_on = trigger.target == entity
+                                        || children_opt
+                                            .map(|children| {
+                                                children.iter().any(|c| c == trigger.target)
+                                            })
+                                            .unwrap_or(false);
+
+                                    if marker.0 && pressed_on {
+                                        commands.insert_resource(SPSavedWorld(name.clone()));
+                                        menu_state.set(MenuState::None);
+                                        game_state.set(GameState::SinglePlayer);
+                                    }
+                                }
+                            },
+                        );
                     world_count += 1;
                 }
             }
@@ -163,111 +212,196 @@ fn singleplayer_menu(mut commands: Commands) {
     }
 
     if world_count == 0 {
-        commands.spawn((Text::new("No saves found"), ChildOf(ui)));
+        commands.spawn((Text::new("No saves found"), ChildOf(vertical)));
     }
 
-    commands.spawn(button("Create New", ui)).observe(
-        |_trigger: Trigger<Pointer<Released>>, mut state: ResMut<NextState<MenuState>>| {
-            state.set(MenuState::SinglePlayerNewWorld);
-        },
-    );
+    let horizontal = commands.spawn(horizontal_ui_bundle(vertical)).id();
+
+    commands
+        .spawn(button("New World", horizontal, 150.0, 50.0))
+        .observe(
+            |_trigger: Trigger<Pointer<Released>>, mut state: ResMut<NextState<MenuState>>| {
+                state.set(MenuState::SinglePlayerNewWorld);
+            },
+        );
+    commands
+        .spawn(button("Back", horizontal, 150.0, 50.0))
+        .observe(
+            |_trigger: Trigger<Pointer<Released>>, mut state: ResMut<NextState<MenuState>>| {
+                state.set(MenuState::Main);
+            },
+        );
 }
 
 fn sp_new_world_menu(mut commands: Commands) {
     let ui = commands
-        .spawn(ui_bundle())
+        .spawn(root_ui_bundle())
         .insert(StateScoped(MenuState::SinglePlayerNewWorld))
         .id();
 
-    commands.spawn(text_box("World Name", ui));
-    commands.spawn(text_box("Seed", ui));
-    commands.spawn(button("Create", ui)).observe(
-        |_trigger: Trigger<Pointer<Released>>,
-         mut commands: Commands,
-         mut menu_state: ResMut<NextState<MenuState>>,
-         mut game_state: ResMut<NextState<GameState>>,
-         textbox: Query<&mut TextBox>| {
-            let mut name = String::new();
-            let mut seed = String::new();
-            for t in textbox.iter() {
-                if t.2 == "World Name" {
-                    name = t.1.clone();
+    let vertical = commands.spawn(vertical_ui_bundle(ui)).id();
+
+    commands.spawn(text_box("World Name", vertical, 400.0, 60.0));
+    commands.spawn(text_box("Seed", vertical, 400.0, 60.0));
+
+    commands.spawn((
+        ErrorText,
+        Text::new(""),
+        TextColor(Color::srgb(1.0, 0.0, 0.0)),
+        Node {
+            max_width: Val::Px(375.0),
+            ..default()
+        },
+        TextLayout::new_with_justify(JustifyText::Center),
+        ChildOf(vertical),
+    ));
+
+    let horizontal = commands.spawn(horizontal_ui_bundle(vertical)).id();
+
+    commands
+        .spawn(button("Create", horizontal, 150.0, 50.0))
+        .observe(
+            |_trigger: Trigger<Pointer<Released>>,
+             mut commands: Commands,
+             mut menu_state: ResMut<NextState<MenuState>>,
+             mut game_state: ResMut<NextState<GameState>>,
+             mut error_text: Single<&mut Text, With<ErrorText>>,
+             textbox: Query<&mut TextBox>| {
+                let mut name = String::new();
+                let mut seed = String::new();
+                for t in textbox.iter() {
+                    if t.2 == "World Name" {
+                        name = t.1.clone();
+                    }
+                    if t.2 == "Seed" {
+                        seed = t.1.clone();
+                    }
                 }
-                if t.2 == "Seed" {
-                    seed = t.1.clone();
+
+                if name.is_empty() {
+                    error_text.0 = "Name cannot be empty".into();
+                    return;
                 }
-            }
-            if !name.is_empty() && !Path::new("saves").join(format!("{}.ferris", name)).exists() {
-                if seed.is_empty() {
-                    commands.insert_resource(SPNewWorld(name, rand::random()));
-                    menu_state.set(MenuState::None);
-                    game_state.set(GameState::SinglePlayer);
-                } else if let Ok(seed) = seed.parse::<u32>() {
-                    commands.insert_resource(SPNewWorld(name, seed));
-                    menu_state.set(MenuState::None);
-                    game_state.set(GameState::SinglePlayer);
+
+                for i in ["/", "\\", ":", "?", "\"", "<", ">", "|"] {
+                    if name.contains(i) {
+                        error_text.0 = "Name contains illegal characters".into();
+                        return;
+                    }
+                }
+
+                if name.len() > 20 {
+                    error_text.0 = "Name is too long".into();
+                    return;
+                }
+
+                if !Path::new("saves").join(format!("{}.ferris", name)).exists() {
+                    if seed.is_empty() {
+                        commands.insert_resource(SPNewWorld(name, rand::random()));
+                        menu_state.set(MenuState::None);
+                        game_state.set(GameState::SinglePlayer);
+                    } else if let Ok(seed) = seed.parse::<u32>() {
+                        commands.insert_resource(SPNewWorld(name, seed));
+                        menu_state.set(MenuState::None);
+                        game_state.set(GameState::SinglePlayer);
+                    } else {
+                        error_text.0 = "Seed must be a valid number".into();
+                    }
                 } else {
-                    println!("Seed must be a valid number");
+                    error_text.0 = "World by that name already exists".into();
                 }
-            } else {
-                println!("World by the name {} already exists", name);
-            }
-        },
-    );
-    commands.spawn(button("Back", ui)).observe(
-        |_trigger: Trigger<Pointer<Released>>, mut state: ResMut<NextState<MenuState>>| {
-            state.set(MenuState::Main);
-        },
-    );
+            },
+        );
+    commands
+        .spawn(button("Back", horizontal, 150.0, 50.0))
+        .observe(
+            |_trigger: Trigger<Pointer<Released>>, mut state: ResMut<NextState<MenuState>>| {
+                state.set(MenuState::Main);
+            },
+        );
 }
 
 fn multiplayer_menu(mut commands: Commands) {
     let ui = commands
-        .spawn(ui_bundle())
+        .spawn(root_ui_bundle())
         .insert(StateScoped(MenuState::MultiPlayer))
         .id();
 
-    commands.spawn(text_box("Player Name", ui));
-    commands.spawn(text_box("Server IP", ui));
-    commands.spawn(button("Connect", ui)).observe(
-        |_trigger: Trigger<Pointer<Released>>,
-         mut commands: Commands,
-         mut menu_state: ResMut<NextState<MenuState>>,
-         mut game_state: ResMut<NextState<GameState>>,
-         textbox: Query<&mut TextBox>| {
-            let mut name = String::new();
-            let mut ip = String::new();
-            for t in textbox.iter() {
-                if t.2 == "Player Name" {
-                    name = t.1.clone();
-                }
-                if t.2 == "Server IP" {
-                    ip = t.1.clone();
-                }
-            }
-            if let Ok(addr) = ip.parse::<SocketAddr>() {
-                println!("Connecting to {}", addr);
-                commands.insert_resource(MultiplayerMenuInput(addr, name));
-                menu_state.set(MenuState::None);
-                game_state.set(GameState::MultiPlayer);
-            } else if let Ok(addr) = ip.parse::<Ipv4Addr>() {
-                println!("Connecting to {}", addr);
-                commands.insert_resource(MultiplayerMenuInput(
-                    SocketAddr::V4(SocketAddrV4::new(addr, DEFAULT_SERVER_PORT)),
-                    name,
-                ));
-                menu_state.set(MenuState::None);
-                game_state.set(GameState::MultiPlayer);
-            } else {
-                println!("Invalid IP address");
-            }
+    let vertical = commands.spawn(vertical_ui_bundle(ui)).id();
+
+    commands.spawn((
+        ErrorText,
+        Text::new(""),
+        TextColor(Color::srgb(1.0, 0.0, 0.0)),
+        Node {
+            max_width: Val::Px(375.0),
+            ..default()
         },
-    );
-    commands.spawn(button("Back", ui)).observe(
-        |_trigger: Trigger<Pointer<Released>>, mut state: ResMut<NextState<MenuState>>| {
-            state.set(MenuState::Main);
-        },
-    );
+        TextLayout::new_with_justify(JustifyText::Center),
+        ChildOf(vertical),
+    ));
+
+    commands.spawn(text_box("Player Name", vertical, 400.0, 60.0));
+    commands.spawn(text_box("Server IP", vertical, 400.0, 60.0));
+
+    let horizontal = commands.spawn(horizontal_ui_bundle(vertical)).id();
+
+    commands
+        .spawn(button("Connect", horizontal, 150.0, 50.0))
+        .observe(
+            |_trigger: Trigger<Pointer<Released>>,
+             mut commands: Commands,
+             mut menu_state: ResMut<NextState<MenuState>>,
+             mut game_state: ResMut<NextState<GameState>>,
+             mut error_text: Single<&mut Text, With<ErrorText>>,
+             textbox: Query<&mut TextBox>| {
+                let mut name = String::new();
+                let mut ip = String::new();
+                for t in textbox.iter() {
+                    if t.2 == "Player Name" {
+                        name = t.1.clone();
+                    }
+                    if t.2 == "Server IP" {
+                        ip = t.1.clone();
+                    }
+                }
+                if name.is_empty() {
+                    error_text.0 = "Player name cannot be empty".into();
+                    return;
+                }
+                if name.len() > 16 {
+                    error_text.0 = "Player name cannot be longer than 16 characters".into();
+                    return;
+                }
+                if ip.is_empty() {
+                    error_text.0 = "IP address cannot be empty".into();
+                    return;
+                }
+                if let Ok(addr) = ip.parse::<SocketAddr>() {
+                    println!("Connecting to {}", addr);
+                    commands.insert_resource(MultiplayerMenuInput(addr, name));
+                    menu_state.set(MenuState::None);
+                    game_state.set(GameState::MultiPlayer);
+                } else if let Ok(addr) = ip.parse::<Ipv4Addr>() {
+                    println!("Connecting to {}", addr);
+                    commands.insert_resource(MultiplayerMenuInput(
+                        SocketAddr::V4(SocketAddrV4::new(addr, DEFAULT_SERVER_PORT)),
+                        name,
+                    ));
+                    menu_state.set(MenuState::None);
+                    game_state.set(GameState::MultiPlayer);
+                } else {
+                    error_text.0 = "Invalid IP address".into();
+                }
+            },
+        );
+    commands
+        .spawn(button("Back", horizontal, 150.0, 50.0))
+        .observe(
+            |_trigger: Trigger<Pointer<Released>>, mut state: ResMut<NextState<MenuState>>| {
+                state.set(MenuState::Main);
+            },
+        );
 }
 
 fn handle_buttons(
@@ -311,9 +445,6 @@ fn handle_textboxes(
             text.0 = textbox.1.clone();
             if textbox.0 {
                 text.0.push('|');
-            }
-            if text.0.is_empty() {
-                text.0 = textbox.2.clone();
             }
         }
     }
@@ -404,7 +535,7 @@ fn handle_hud(
     }
 }
 
-pub fn ui_bundle() -> impl Bundle {
+pub fn root_ui_bundle() -> impl Bundle {
     (
         Node {
             position_type: PositionType::Absolute,
@@ -412,11 +543,37 @@ pub fn ui_bundle() -> impl Bundle {
             height: Val::Percent(100.0),
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
-            flex_direction: FlexDirection::Column,
-            row_gap: Val::Percent(1.0),
             ..default()
         },
         GlobalZIndex(i32::MAX),
+    )
+}
+
+pub fn vertical_ui_bundle(parent: Entity) -> impl Bundle {
+    (
+        Node {
+            height: Val::Percent(100.0),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Percent(1.5),
+            ..default()
+        },
+        ChildOf(parent),
+    )
+}
+
+pub fn horizontal_ui_bundle(parent: Entity) -> impl Bundle {
+    (
+        Node {
+            width: Val::Percent(100.0),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceEvenly,
+            flex_direction: FlexDirection::Row,
+            column_gap: Val::Percent(3.0),
+            ..default()
+        },
+        ChildOf(parent),
     )
 }
 
@@ -424,12 +581,12 @@ pub const NORMAL_BUTTON: Color = Color::srgb(0.15, 0.15, 0.15);
 pub const HOVERED_BUTTON: Color = Color::srgb(0.25, 0.25, 0.25);
 pub const PRESSED_BUTTON: Color = Color::srgb(0.35, 0.35, 0.35);
 
-pub fn button(text: &str, ui: Entity) -> impl Bundle {
+pub fn button(text: &str, parent: Entity, size_x: f32, size_y: f32) -> impl Bundle {
     (
         Button,
         Node {
-            width: Val::Px(300.0),
-            height: Val::Px(60.0),
+            width: Val::Px(size_x),
+            height: Val::Px(size_y),
             border: UiRect::all(Val::Px(5.0)),
             justify_content: JustifyContent::Center,
             align_items: AlignItems::Center,
@@ -442,25 +599,25 @@ pub fn button(text: &str, ui: Entity) -> impl Bundle {
             Text::new(text),
             TextFont {
                 // font: asset_server.load("fonts/FiraSans-Bold.ttf"),
-                font_size: 33.0,
+                font_size: (size_x.sqrt() * 1.8).min(26.0),
                 ..default()
             },
             TextColor(Color::srgb(0.9, 0.9, 0.9)),
             TextShadow::default(),
         )],
-        ChildOf(ui),
+        ChildOf(parent),
     )
 }
 
 #[derive(Component)]
 pub struct TextBox(pub bool, pub String, pub String);
 
-pub fn text_box(text: &str, ui: Entity) -> impl Bundle {
+pub fn text_box(text: &str, parent: Entity, size_x: f32, size_y: f32) -> impl Bundle {
     (
         Button,
         Node {
-            width: Val::Px(300.0),
-            height: Val::Px(60.0),
+            width: Val::Px(size_x),
+            height: Val::Px(size_y),
             border: UiRect::all(Val::Px(5.0)),
             justify_content: JustifyContent::Center,
             align_items: AlignItems::Center,
@@ -474,13 +631,13 @@ pub fn text_box(text: &str, ui: Entity) -> impl Bundle {
             Text::new(text),
             TextFont {
                 // font: asset_server.load("fonts/FiraSans-Bold.ttf"),
-                font_size: 33.0,
+                font_size: 26.0,
                 ..default()
             },
             TextColor(Color::srgb(0.9, 0.9, 0.9)),
             TextShadow::default(),
         )],
-        ChildOf(ui),
+        ChildOf(parent),
     )
 }
 
