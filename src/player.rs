@@ -25,33 +25,33 @@ pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup);
-        app.add_systems(
-            Update,
-            (camera_movement, handle_interactions)
-                .run_if(not(in_state(GameState::Menu)))
-                .in_set(PausableSystems),
-        )
-        .add_systems(
-            FixedUpdate,
-            player_movement
-                .run_if(
-                    // only run if chunks have been loaded
-                    |game_info: Res<GameInfo>,
-                     game_settings: Res<GameSettings>,
-                     mut is_loaded: Local<bool>| {
-                        if !*is_loaded {
-                            *is_loaded = game_info.chunks.read().unwrap().len()
-                                == ((game_settings.render_distance * 2)
-                                    * (game_settings.render_distance * 2))
-                                    as usize;
-                        }
-                        *is_loaded
-                    },
-                )
-                .run_if(not(in_state(GameState::Menu)))
-                .in_set(PausableSystems),
-        );
+        app.add_systems(Startup, setup)
+            .add_systems(
+                Update,
+                (camera_movement, handle_interactions)
+                    .run_if(not(in_state(GameState::Menu)))
+                    .in_set(PausableSystems),
+            )
+            .add_systems(
+                FixedUpdate,
+                player_movement
+                    .run_if(
+                        // only run if chunks have been loaded
+                        |game_info: Res<GameInfo>,
+                         game_settings: Res<GameSettings>,
+                         mut is_loaded: Local<bool>| {
+                            if !*is_loaded {
+                                *is_loaded = game_info.chunks.read().unwrap().len()
+                                    == ((game_settings.render_distance * 2)
+                                        * (game_settings.render_distance * 2))
+                                        as usize;
+                            }
+                            *is_loaded
+                        },
+                    )
+                    .run_if(not(in_state(GameState::Menu)))
+                    .in_set(PausableSystems),
+            );
     }
 }
 

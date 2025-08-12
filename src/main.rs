@@ -26,6 +26,7 @@ use bevy::{
     window::{ExitCondition, PresentMode, PrimaryWindow, WindowMode},
 };
 use bevy_framepace::FramepacePlugin;
+use bevy_mod_billboard::plugin::BillboardPlugin;
 use ferriscraft::{BlockKind, CHUNK_HEIGHT, CHUNK_SIZE, GameEntity, GameEntityKind, SavedChunk};
 
 use crate::{
@@ -81,6 +82,7 @@ fn main() {
                 }),
             TemporalAntiAliasPlugin,
             FramepacePlugin,
+            BillboardPlugin,
         ))
         .add_plugins((
             SinglePlayerPlugin,

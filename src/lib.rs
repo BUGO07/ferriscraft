@@ -11,7 +11,7 @@ use std::{
 };
 
 use bevy::prelude::*;
-use bevy_renet::renet::{DefaultChannel, RenetClient};
+use bevy_renet::renet::{DefaultChannel, RenetClient, RenetServer};
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_SERVER_PORT: u16 = 42069;
@@ -28,15 +28,16 @@ pub enum ClientPacket {
 }
 
 impl ClientPacket {
+    fn channel(&self) -> DefaultChannel {
+        match self {
+            ClientPacket::ChatMessage(_) => DefaultChannel::ReliableOrdered,
+            ClientPacket::PlaceBlock(_, _) => DefaultChannel::ReliableOrdered,
+            ClientPacket::Move(_) => DefaultChannel::Unreliable,
+        }
+    }
     pub fn send(&mut self, client: Option<ResMut<RenetClient>>) {
         if let Some(mut client) = client {
-            let channel = match self {
-                ClientPacket::ChatMessage(_) => DefaultChannel::ReliableOrdered,
-                ClientPacket::PlaceBlock(_, _) => DefaultChannel::ReliableOrdered,
-                ClientPacket::Move(_) => DefaultChannel::Unreliable,
-            };
-
-            client.send_message(channel, bincode::serialize(self).unwrap());
+            client.send_message(self.channel(), bincode::serialize(self).unwrap());
         }
     }
 }
@@ -44,10 +45,37 @@ impl ClientPacket {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ServerPacket {
     ChatMessage(String),                      // message
-    ClientConnected(u64, Vec3),               // id, pos
+    ClientConnected(String, Vec3),            // id, pos
     ClientDisconnected(u64, String),          // id, reason
     ConnectionInfo(u32, Vec3),                // seed, pos
     PlayerData(HashMap<u64, (String, Vec3)>), // id, (name, pos)
+    ChunkUpdate(IVec3, SavedChunk),           // pos, chunk
+}
+
+impl ServerPacket {
+    fn channel(&self) -> DefaultChannel {
+        match self {
+            ServerPacket::ChatMessage(_) => DefaultChannel::ReliableOrdered,
+            ServerPacket::ClientConnected(_, _) => DefaultChannel::ReliableOrdered,
+            ServerPacket::ClientDisconnected(_, _) => DefaultChannel::ReliableOrdered,
+            ServerPacket::ConnectionInfo(_, _) => DefaultChannel::ReliableOrdered,
+            ServerPacket::PlayerData(_) => DefaultChannel::Unreliable,
+            ServerPacket::ChunkUpdate(_, _) => DefaultChannel::Unreliable,
+        }
+    }
+    pub fn broadcast(&mut self, server: &mut RenetServer) {
+        server.broadcast_message(self.channel(), bincode::serialize(self).unwrap());
+    }
+    pub fn broadcast_except(&mut self, server: &mut RenetServer, client_id: u64) {
+        server.broadcast_message_except(
+            client_id,
+            self.channel(),
+            bincode::serialize(self).unwrap(),
+        );
+    }
+    pub fn send(&mut self, server: &mut RenetServer, client_id: u64) {
+        server.send_message(client_id, self.channel(), bincode::serialize(self).unwrap());
+    }
 }
 
 #[inline]

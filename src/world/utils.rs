@@ -32,14 +32,14 @@ pub fn update_chunk(
 pub fn place_block(
     commands: &mut Commands,
     client: Option<ResMut<RenetClient>>,
-    saved_chunks: &GameInfo,
+    game_info: &GameInfo,
     chunk: &mut Chunk,
     chunks: &Query<(Entity, &Transform), With<ChunkMarker>>,
     pos: IVec3,
     block: Block,
 ) {
     chunk.blocks[vec3_to_index(pos)] = block;
-    if let Some(saved_chunks) = &saved_chunks.saved_chunks {
+    if let Some(saved_chunks) = &game_info.saved_chunks {
         match saved_chunks.write().unwrap().entry(chunk.pos) {
             Entry::Vacant(e) => {
                 e.insert(SavedChunk {
