@@ -4,13 +4,11 @@ use std::{
 };
 
 use bevy::{
-    core_pipeline::{Skybox, bloom::Bloom, experimental::taa::TemporalAntiAliasing},
     diagnostic::{
         EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin,
         SystemInformationDiagnosticsPlugin,
     },
     input::{ButtonState, keyboard::KeyboardInput, mouse::MouseWheel},
-    pbr::ScreenSpaceAmbientOcclusion,
     prelude::*,
     render::diagnostic::RenderDiagnosticsPlugin,
     window::PrimaryWindow,
@@ -23,10 +21,8 @@ use ferriscraft::{BlockKind, DEFAULT_SERVER_PORT};
 use iyes_perf_ui::{PerfUiPlugin, prelude::PerfUiEntryFPS};
 
 use crate::{
-    CHUNK_SIZE, GameInfo, GameSettings, PausableSystems,
-    multiplayer::client::MultiplayerMenuInput,
-    player::{Player, PlayerCamera},
-    render_pipeline::PostProcessSettings,
+    CHUNK_SIZE, GameInfo, GameSettings,
+    player::Player,
     singleplayer::{SPNewWorld, SPSavedWorld},
     utils::set_cursor_grab,
     world::utils::terrain_noise,
@@ -91,8 +87,8 @@ impl Plugin for UIPlugin {
         .add_systems(OnEnter(MenuState::MultiPlayer), multiplayer_menu)
         .add_systems(OnEnter(GameState::Menu), ungrab_cursor)
         .add_systems(OnExit(GameState::Menu), grab_cursor)
-        .add_systems(Update, (handle_buttons, handle_textboxes))
-        .add_systems(Update, handle_hud.in_set(PausableSystems));
+        .add_systems(Update, (handle_errors, handle_buttons, handle_textboxes).run_if(in_state(GameState::Menu)))
+        .add_systems(Update, handle_hud.run_if(not(in_state(GameState::Menu))));
     }
 }
 
@@ -137,17 +133,7 @@ pub struct ErrorText;
 pub struct SavedWorldMarker(pub bool);
 
 fn setup(mut commands: Commands, camera: Query<Entity, With<Camera>>) {
-    if let Ok(camera) = camera.single() {
-        // idfk what im doing at this point
-        commands.entity(camera).remove::<(
-            TemporalAntiAliasing,
-            PostProcessSettings,
-            Skybox,
-            Bloom,
-            ScreenSpaceAmbientOcclusion,
-            PlayerCamera,
-        )>();
-    } else {
+    if camera.single().is_err() {
         commands.spawn(Camera3d::default());
     }
 }
@@ -290,9 +276,9 @@ fn sp_new_world_menu(mut commands: Commands) {
         .observe(
             |_trigger: Trigger<Pointer<Released>>,
              mut commands: Commands,
+             mut game_info: ResMut<GameInfo>,
              mut menu_state: ResMut<NextState<MenuState>>,
              mut game_state: ResMut<NextState<GameState>>,
-             mut error_text: Single<&mut Text, With<ErrorText>>,
              textbox: Query<&mut TextBox>| {
                 let mut name = String::new();
                 let mut seed = String::new();
@@ -306,36 +292,38 @@ fn sp_new_world_menu(mut commands: Commands) {
                 }
 
                 if name.is_empty() {
-                    error_text.0 = "Name cannot be empty".into();
+                    game_info.ui_err = Some("Name cannot be empty".into());
                     return;
                 }
 
                 for i in ["/", "\\", ":", "?", "\"", "<", ">", "|"] {
                     if name.contains(i) {
-                        error_text.0 = "Name contains illegal characters".into();
+                        game_info.ui_err = Some("Name contains illegal characters".into());
                         return;
                     }
                 }
 
                 if name.len() > 20 {
-                    error_text.0 = "Name is too long".into();
+                    game_info.ui_err = Some("Name is too long".into());
                     return;
                 }
 
                 if !Path::new("saves").join(format!("{}.ferris", name)).exists() {
                     if seed.is_empty() {
+                        game_info.ui_err = None;
                         commands.insert_resource(SPNewWorld(name, rand::random()));
                         menu_state.set(MenuState::None);
                         game_state.set(GameState::SinglePlayer);
                     } else if let Ok(seed) = seed.parse::<u32>() {
+                        game_info.ui_err = None;
                         commands.insert_resource(SPNewWorld(name, seed));
                         menu_state.set(MenuState::None);
                         game_state.set(GameState::SinglePlayer);
                     } else {
-                        error_text.0 = "Seed must be a valid number".into();
+                        game_info.ui_err = Some("Seed must be a valid number".into());
                     }
                 } else {
-                    error_text.0 = "World by that name already exists".into();
+                    game_info.ui_err = Some("World by that name already exists".into());
                 }
             },
         );
@@ -377,7 +365,7 @@ fn multiplayer_menu(mut commands: Commands) {
         .spawn(button("Connect", horizontal, 150.0, 50.0))
         .observe(
             |_trigger: Trigger<Pointer<Released>>,
-             mut commands: Commands,
+             mut game_info: ResMut<GameInfo>,
              mut menu_state: ResMut<NextState<MenuState>>,
              mut game_state: ResMut<NextState<GameState>>,
              mut error_text: Single<&mut Text, With<ErrorText>>,
@@ -406,15 +394,15 @@ fn multiplayer_menu(mut commands: Commands) {
                 }
                 if let Ok(addr) = ip.parse::<SocketAddr>() {
                     println!("Connecting to {}", addr);
-                    commands.insert_resource(MultiplayerMenuInput(addr, name));
+                    game_info.player_name = name;
+                    game_info.server_addr = Some(addr);
                     menu_state.set(MenuState::None);
                     game_state.set(GameState::MultiPlayer);
                 } else if let Ok(addr) = ip.parse::<Ipv4Addr>() {
-                    println!("Connecting to {}", addr);
-                    commands.insert_resource(MultiplayerMenuInput(
-                        SocketAddr::V4(SocketAddrV4::new(addr, DEFAULT_SERVER_PORT)),
-                        name,
-                    ));
+                    println!("Connecting to {}:{}", addr, DEFAULT_SERVER_PORT);
+                    game_info.player_name = name;
+                    game_info.server_addr =
+                        Some(SocketAddr::V4(SocketAddrV4::new(addr, DEFAULT_SERVER_PORT)));
                     menu_state.set(MenuState::None);
                     game_state.set(GameState::MultiPlayer);
                 } else {
@@ -429,6 +417,14 @@ fn multiplayer_menu(mut commands: Commands) {
                 state.set(MenuState::Main);
             },
         );
+}
+
+fn handle_errors(mut error_text: Single<&mut Text, With<ErrorText>>, game_info: Res<GameInfo>) {
+    if game_info.is_changed()
+        && let Some(err) = &game_info.ui_err
+    {
+        error_text.0 = err.clone();
+    }
 }
 
 fn handle_buttons(
@@ -499,20 +495,6 @@ fn handle_hud(
         }
     }
 
-    for ev in mouse_scroll.read() {
-        let dir = -ev.y.signum();
-        let mut next = game_info.current_block as i32 + dir as i32;
-        if next == BlockKind::Water as i32 {
-            next += dir as i32;
-        }
-        if next < 1 {
-            next = 10;
-        } else if next > 10 {
-            next = 1;
-        }
-        game_info.current_block = BlockKind::from_u32(next as u32);
-    }
-
     let (_, biome) = terrain_noise(player.translation.xz(), &game_info.noises);
 
     let deg = player.rotation.to_euler(EulerRot::YXZ).0.to_degrees();
@@ -553,11 +535,27 @@ fn handle_hud(
         game_info.current_block
     );
 
-    for mut visibility in perf_ui {
-        *visibility = if game_settings.debug_menus {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
+    if !game_settings.paused {
+        for ev in mouse_scroll.read() {
+            let dir = -ev.y.signum();
+            let mut next = game_info.current_block as i32 + dir as i32;
+            if next == BlockKind::Water as i32 {
+                next += dir as i32;
+            }
+            if next < 1 {
+                next = 10;
+            } else if next > 10 {
+                next = 1;
+            }
+            game_info.current_block = BlockKind::from_u32(next as u32);
+        }
+
+        for mut visibility in perf_ui {
+            *visibility = if game_settings.debug_menus {
+                Visibility::Visible
+            } else {
+                Visibility::Hidden
+            }
         }
     }
 }

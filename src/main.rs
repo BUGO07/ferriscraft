@@ -3,11 +3,13 @@
     clippy::too_many_arguments,
     clippy::type_complexity,
     clippy::match_like_matches_macro,
-    clippy::vec_init_then_push
+    clippy::vec_init_then_push,
+    clippy::manual_map
 )]
 
 use std::{
     collections::{HashMap, HashSet},
+    net::SocketAddr,
     path::Path,
     sync::{Arc, RwLock},
 };
@@ -130,6 +132,7 @@ fn main() {
                 },
             ),
         )
+        .add_systems(Startup, setup)
         // escape button
         .add_systems(
             Update,
@@ -157,11 +160,30 @@ fn main() {
         )
         .add_systems(
             Update,
-            (handle_keybinds, handle_gizmos)
-                .run_if(not(in_state(GameState::Menu)))
-                .in_set(PausableSystems),
+            (
+                handle_keybinds.run_if(|settings: Res<GameSettings>| !settings.paused),
+                handle_gizmos.in_set(PausableSystems),
+            )
+                .run_if(not(in_state(GameState::Menu))),
         )
         .run();
+}
+
+fn setup(
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut game_info: ResMut<GameInfo>,
+    asset_server: Res<AssetServer>,
+) {
+    let mut mats = Vec::new();
+    mats.push(materials.add(StandardMaterial {
+        base_color_texture: Some(asset_server.load("atlas.ktx2")),
+        reflectance: 0.0,
+        ..default()
+    }));
+    let mut models = Vec::new();
+    models.push(asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/ferris.glb")));
+    game_info.materials = mats;
+    game_info.models = models;
 }
 
 #[derive(Resource, Default)]
@@ -173,6 +195,9 @@ struct GameInfo {
     models: Vec<Handle<Scene>>,
     noises: NoiseFunctions,
     current_block: BlockKind,
+    player_name: String,
+    server_addr: Option<SocketAddr>,
+    ui_err: Option<String>,
 }
 
 #[derive(Reflect, Resource, Default)]
@@ -193,7 +218,7 @@ struct GameSettings {
 
 fn handle_keybinds(
     mut commands: Commands,
-    // mut persistent_world: ResMut<Persistent<SavedWorld>>,
+    // mut persistent_world: Option<ResMut<Persistent<SavedWorld>>>,
     mut primary_window: Single<&mut Window, With<PrimaryWindow>>,
     mut wireframe_config: ResMut<WireframeConfig>,
     mut game_settings: ResMut<GameSettings>,

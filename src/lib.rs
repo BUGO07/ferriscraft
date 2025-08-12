@@ -24,6 +24,7 @@ pub const SEA_LEVEL: i32 = 64; // MAX CHUNK_HEIGHT - 180
 pub enum ClientPacket {
     ChatMessage(String),
     PlaceBlock(IVec3, Block),
+    LoadChunks(Vec<IVec3>),
     Move(Vec3),
 }
 
@@ -32,6 +33,7 @@ impl ClientPacket {
         match self {
             ClientPacket::ChatMessage(_) => DefaultChannel::ReliableOrdered,
             ClientPacket::PlaceBlock(_, _) => DefaultChannel::ReliableOrdered,
+            ClientPacket::LoadChunks(_) => DefaultChannel::ReliableOrdered,
             ClientPacket::Move(_) => DefaultChannel::Unreliable,
         }
     }
@@ -44,23 +46,23 @@ impl ClientPacket {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ServerPacket {
-    ChatMessage(String),                      // message
-    ClientConnected(String, Vec3),            // id, pos
-    ClientDisconnected(u64, String),          // id, reason
-    ConnectionInfo(u32, Vec3),                // seed, pos
-    PlayerData(HashMap<u64, (String, Vec3)>), // id, (name, pos)
-    ChunkUpdate(IVec3, SavedChunk),           // pos, chunk
+    ChatMessage(String, String),        // player, message
+    PlayerConnected(String, Vec3),      // player, pos
+    PlayerDisconnected(String, String), // player, reason
+    ConnectionInfo(u32, Vec3),          // seed, pos
+    ChunkUpdate(IVec3, SavedChunk),     // pos, chunk
+    PlayerData(HashMap<String, Vec3>),  // player, pos
 }
 
 impl ServerPacket {
     fn channel(&self) -> DefaultChannel {
         match self {
-            ServerPacket::ChatMessage(_) => DefaultChannel::ReliableOrdered,
-            ServerPacket::ClientConnected(_, _) => DefaultChannel::ReliableOrdered,
-            ServerPacket::ClientDisconnected(_, _) => DefaultChannel::ReliableOrdered,
+            ServerPacket::ChatMessage(_, _) => DefaultChannel::ReliableOrdered,
+            ServerPacket::PlayerConnected(_, _) => DefaultChannel::ReliableOrdered,
+            ServerPacket::PlayerDisconnected(_, _) => DefaultChannel::ReliableOrdered,
             ServerPacket::ConnectionInfo(_, _) => DefaultChannel::ReliableOrdered,
+            ServerPacket::ChunkUpdate(_, _) => DefaultChannel::ReliableUnordered,
             ServerPacket::PlayerData(_) => DefaultChannel::Unreliable,
-            ServerPacket::ChunkUpdate(_, _) => DefaultChannel::Unreliable,
         }
     }
     pub fn broadcast(&mut self, server: &mut RenetServer) {
@@ -85,9 +87,6 @@ pub fn hash(value: impl std::hash::Hash) -> u64 {
     hasher.finish()
 }
 
-#[derive(Resource, Default, Clone)]
-pub struct PlayerData(pub HashMap<u64, (String, Vec3)>);
-
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct SavedChunk {
     pub entities: Vec<(Entity, GameEntity)>,
@@ -109,7 +108,6 @@ pub struct GameEntity {
     pub rot: f32,
 }
 
-#[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug, Serialize, Deserialize)]
 pub enum BlockKind {
     #[default]
@@ -126,7 +124,6 @@ pub enum BlockKind {
     Snow,
 }
 
-#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GameEntityKind {
     Ferris,
@@ -138,7 +135,6 @@ pub struct Block {
     pub direction: Direction,
 }
 
-#[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug, Serialize, Deserialize)]
 pub enum Direction {
     Left,

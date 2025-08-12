@@ -1,4 +1,4 @@
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::HashMap;
 
 use bevy::prelude::*;
 use bevy_renet::renet::RenetClient;
@@ -9,18 +9,18 @@ use noiz::{
 };
 
 use crate::{
-    CHUNK_SIZE, GameInfo,
+    CHUNK_SIZE,
     utils::{noise, vec3_to_index},
     world::{Chunk, ChunkMarker},
 };
 
-pub fn update_chunk(
+pub fn update_chunks(
     commands: &mut Commands,
-    chunks: &Query<(Entity, &Transform), With<ChunkMarker>>,
-    pos: IVec3,
+    chunks: Query<(Entity, &Transform), With<ChunkMarker>>,
+    positions: Vec<IVec3>,
 ) {
     for (entity, transform) in chunks {
-        if (transform.translation / CHUNK_SIZE as f32).as_ivec3() == pos {
+        if positions.contains(&(transform.translation / CHUNK_SIZE as f32).as_ivec3()) {
             commands
                 .entity(entity)
                 .try_remove::<ChunkMarker>()
@@ -30,41 +30,44 @@ pub fn update_chunk(
 }
 
 pub fn place_block(
-    commands: &mut Commands,
-    client: Option<ResMut<RenetClient>>,
-    game_info: &GameInfo,
     chunk: &mut Chunk,
-    chunks: &Query<(Entity, &Transform), With<ChunkMarker>>,
     pos: IVec3,
     block: Block,
+    saved_chunks: &mut Option<&mut HashMap<IVec3, SavedChunk>>,
+    client: Option<ResMut<RenetClient>>,
+    update: Option<(
+        &mut Commands,
+        Query<(Entity, &Transform), With<ChunkMarker>>,
+    )>,
 ) {
     chunk.blocks[vec3_to_index(pos)] = block;
-    if let Some(saved_chunks) = &game_info.saved_chunks {
-        match saved_chunks.write().unwrap().entry(chunk.pos) {
-            Entry::Vacant(e) => {
-                e.insert(SavedChunk {
-                    blocks: HashMap::from([(pos, block)]),
-                    entities: chunk.entities.clone(),
-                });
-            }
-            Entry::Occupied(mut e) => {
-                e.get_mut().blocks.insert(pos, block);
-            }
+    if let Some(saved_chunks) = saved_chunks {
+        saved_chunks
+            .entry(chunk.pos)
+            .and_modify(|c| {
+                c.blocks.insert(pos, block);
+            })
+            .or_insert(SavedChunk {
+                blocks: HashMap::from([(pos, block)]),
+                entities: chunk.entities.clone(),
+            });
+    }
+    if let Some((commands, chunks)) = update {
+        let mut positions = vec![chunk.pos];
+        if pos.x == 0 {
+            positions.push(chunk.pos - IVec3::X);
         }
+        if pos.x == CHUNK_SIZE - 1 {
+            positions.push(chunk.pos + IVec3::X);
+        }
+        if pos.z == 0 {
+            positions.push(chunk.pos - IVec3::Z);
+        }
+        if pos.z == CHUNK_SIZE - 1 {
+            positions.push(chunk.pos + IVec3::Z);
+        }
+        update_chunks(commands, chunks, positions);
     }
-    if pos.x == 0 {
-        update_chunk(commands, chunks, chunk.pos - IVec3::X);
-    }
-    if pos.x == CHUNK_SIZE - 1 {
-        update_chunk(commands, chunks, chunk.pos + IVec3::X);
-    }
-    if pos.z == 0 {
-        update_chunk(commands, chunks, chunk.pos - IVec3::Z);
-    }
-    if pos.z == CHUNK_SIZE - 1 {
-        update_chunk(commands, chunks, chunk.pos + IVec3::Z);
-    }
-    update_chunk(commands, chunks, chunk.pos);
     ClientPacket::PlaceBlock(chunk.pos * CHUNK_SIZE + pos, block).send(client);
 }
 

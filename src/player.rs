@@ -28,19 +28,20 @@ impl Plugin for PlayerPlugin {
         app.add_systems(Startup, setup)
             .add_systems(
                 Update,
-                (camera_movement, handle_interactions)
-                    .run_if(not(in_state(GameState::Menu)))
-                    .in_set(PausableSystems),
+                (camera_movement, handle_interactions).run_if(
+                    not(in_state(GameState::Menu))
+                        .and(|game_settings: Res<GameSettings>| !game_settings.paused),
+                ),
             )
             .add_systems(
                 FixedUpdate,
                 player_movement
                     .run_if(
                         // only run if chunks have been loaded
-                        |game_info: Res<GameInfo>,
+                        |game_info: Option<Res<GameInfo>>,
                          game_settings: Res<GameSettings>,
                          mut is_loaded: Local<bool>| {
-                            if !*is_loaded {
+                            if !*is_loaded && let Some(game_info) = game_info {
                                 *is_loaded = game_info.chunks.read().unwrap().len()
                                     == ((game_settings.render_distance * 2)
                                         * (game_settings.render_distance * 2))
@@ -61,7 +62,7 @@ pub struct Player {
 }
 
 #[derive(Component)]
-pub struct OnlinePlayer(pub u64);
+pub struct OnlinePlayer(pub String);
 
 #[derive(Component)]
 pub struct PlayerCamera;
@@ -102,14 +103,18 @@ fn handle_interactions(
 
         if mouse.just_pressed(MouseButton::Left) {
             if let Some(chunk) = game_info.chunks.write().unwrap().get_mut(&chunk_pos) {
+                let mut saved_chunks = if let Some(saved_chunks) = &game_info.saved_chunks {
+                    Some(&mut *saved_chunks.write().unwrap())
+                } else {
+                    None
+                };
                 place_block(
-                    &mut commands,
-                    client,
-                    &game_info,
                     chunk,
-                    &chunks,
                     local_pos,
                     Block::AIR,
+                    &mut saved_chunks,
+                    client,
+                    Some((&mut commands, chunks)),
                 );
             }
         } else if mouse.just_pressed(MouseButton::Right) {
@@ -143,12 +148,13 @@ fn handle_interactions(
 
                 if let Some(chunk) = game_info.chunks.write().unwrap().get_mut(&chunk_pos) {
                     if chunk.blocks[vec3_to_index(local_pos)] == Block::AIR {
+                        let mut saved_chunks = if let Some(saved_chunks) = &game_info.saved_chunks {
+                            Some(&mut *saved_chunks.write().unwrap())
+                        } else {
+                            None
+                        };
                         place_block(
-                            &mut commands,
-                            client,
-                            &game_info,
                             chunk,
-                            &chunks,
                             local_pos,
                             Block {
                                 kind: game_info.current_block,
@@ -158,6 +164,9 @@ fn handle_interactions(
                                     Default::default()
                                 },
                             },
+                            &mut saved_chunks,
+                            client,
+                            Some((&mut commands, chunks)),
                         );
                     }
                 } else {
@@ -207,29 +216,31 @@ fn player_movement(
     let mut move_dir = Vec3::ZERO;
     let mut sprint_multiplier = 1.0;
 
-    let local_z = transform.local_z();
-    let forward = -Vec3::new(local_z.x, 0.0, local_z.z).normalize_or_zero();
-    let right = Vec3::new(local_z.z, 0.0, -local_z.x).normalize_or_zero();
-
     let sneaking = keyboard.pressed(KeyCode::ShiftLeft);
 
-    if keyboard.pressed(KeyCode::KeyW) {
-        if !sneaking && keyboard.pressed(KeyCode::ControlLeft) {
-            sprint_multiplier = 1.3;
-        }
-        move_dir += forward;
-    }
-    if keyboard.pressed(KeyCode::KeyS) {
-        move_dir -= forward;
-    }
-    if keyboard.pressed(KeyCode::KeyA) {
-        move_dir -= right;
-    }
-    if keyboard.pressed(KeyCode::KeyD) {
-        move_dir += right;
-    }
+    if !settings.paused {
+        let local_z = transform.local_z();
+        let forward = -Vec3::new(local_z.x, 0.0, local_z.z).normalize_or_zero();
+        let right = Vec3::new(local_z.z, 0.0, -local_z.x).normalize_or_zero();
 
-    move_dir = move_dir.normalize_or_zero();
+        if keyboard.pressed(KeyCode::KeyW) {
+            if !sneaking && keyboard.pressed(KeyCode::ControlLeft) {
+                sprint_multiplier = 1.3;
+            }
+            move_dir += forward;
+        }
+        if keyboard.pressed(KeyCode::KeyS) {
+            move_dir -= forward;
+        }
+        if keyboard.pressed(KeyCode::KeyA) {
+            move_dir -= right;
+        }
+        if keyboard.pressed(KeyCode::KeyD) {
+            move_dir += right;
+        }
+
+        move_dir = move_dir.normalize_or_zero();
+    }
 
     let mut target_velocity = vec3(
         move_dir.x * settings.movement_speed * sprint_multiplier,
@@ -318,7 +329,7 @@ fn player_movement(
     }
 
     if grounded {
-        if keyboard.pressed(KeyCode::Space) {
+        if !settings.paused && keyboard.pressed(KeyCode::Space) {
             let mut head_blocked = false;
             for offset in grounded_offsets {
                 let origin = transform.translation + Vec3::Y * 1.8 + *offset;

@@ -1,7 +1,13 @@
-#![allow(clippy::match_like_matches_macro, clippy::single_match)]
+#![allow(
+    clippy::match_like_matches_macro,
+    clippy::single_match,
+    clippy::too_many_arguments
+)]
+
+// todo: not use bevy to avoid overhead?
 
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    collections::HashMap,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket},
     path::Path,
     time::SystemTime,
@@ -19,8 +25,7 @@ use bevy_renet::{
     renet::{ConnectionConfig, DefaultChannel, RenetServer, ServerEvent},
 };
 use ferriscraft::{
-    CHUNK_SIZE, ClientPacket, DEFAULT_SERVER_PORT, PlayerData, SavedChunk, SavedWorld,
-    ServerPacket, hash,
+    CHUNK_SIZE, ClientPacket, DEFAULT_SERVER_PORT, SavedChunk, SavedWorld, ServerPacket,
 };
 
 fn main() {
@@ -29,6 +34,7 @@ fn main() {
             DefaultPlugins.set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "FerrisCraft Server".to_string(),
+                    resolution: (600.0, 600.0).into(),
                     ..default()
                 }),
                 ..default()
@@ -39,7 +45,6 @@ fn main() {
         ))
         .insert_resource(ServerSettings {
             private_ip: "127.0.0.1".to_string(),
-            public_ip: "127.0.0.1".to_string(),
             port: DEFAULT_SERVER_PORT.to_string(),
             max_players: 64.to_string(),
             ..default()
@@ -57,8 +62,6 @@ fn main() {
                 .build()
                 .expect("World save couldn't be read, please make a backup of saves/world.ferris and remove it from the saves folder."),
         )
-        .init_resource::<PlayerData>()
-        .init_resource::<GameInfo>()
         .add_systems(Startup, setup)
         .add_systems(EguiPrimaryContextPass, handle_ui)
         .add_systems(
@@ -74,6 +77,7 @@ fn setup(mut commands: Commands) {
 #[derive(Resource, Default)]
 pub struct GameInfo {
     pub saved_chunks: HashMap<IVec3, SavedChunk>,
+    pub players: HashMap<u64, (String, Vec3)>,
 }
 
 #[derive(Resource, Default)]
@@ -92,6 +96,8 @@ fn handle_ui(
     mut commands: Commands,
     mut contexts: EguiContexts,
     mut server_settings: ResMut<ServerSettings>,
+    game_info: Option<Res<GameInfo>>,
+    persistent_world: Option<ResMut<Persistent<SavedWorld>>>,
     transport: Option<ResMut<NetcodeServerTransport>>,
     server: Option<ResMut<RenetServer>>,
 ) -> Result {
@@ -142,13 +148,16 @@ fn handle_ui(
                 ));
                 ui.add_space(10.0);
 
-                for client in server.clients_id_iter() {
+                for client_id in server.clients_id() {
                     ui.label(format!(
                         "{} | {:.2}ms | {}",
-                        String::from_utf8_lossy(&transport.user_data(client).unwrap()),
-                        server.rtt(client),
-                        transport.client_addr(client).unwrap()
+                        String::from_utf8_lossy(&transport.user_data(client_id).unwrap()),
+                        server.rtt(client_id),
+                        transport.client_addr(client_id).unwrap()
                     ));
+                    if ui.button("Kick").clicked() {
+                        server.disconnect(client_id);
+                    }
                     ui.add_space(10.0);
                 }
 
@@ -156,46 +165,46 @@ fn handle_ui(
                     .add_sized([240.0, 40.0], egui::Button::new("Stop Server"))
                     .clicked()
                 {
+                    save_game(persistent_world, game_info);
                     transport.disconnect_all(&mut server);
                     commands.remove_resource::<RenetServer>();
                     commands.remove_resource::<NetcodeServerTransport>();
+                    commands.remove_resource::<GameInfo>();
                     server_settings.running = false;
                 }
             } else {
                 ui.heading("Server Settings");
                 ui.add_space(10.0);
 
-                egui::Grid::new("settings")
-                    .spacing([12.0, 10.0])
-                    .show(ui, |ui| {
-                        ui.label("Private IP:");
-                        ui.add_sized(
-                            [200.0, 28.0],
-                            egui::TextEdit::singleline(&mut server_settings.private_ip),
-                        );
-                        ui.end_row();
+                ui.label("Private IP:");
+                ui.add_sized(
+                    [200.0, 28.0],
+                    egui::TextEdit::singleline(&mut server_settings.private_ip)
+                        .horizontal_align(egui::Align::Center),
+                );
 
-                        ui.label("Public IP:");
-                        ui.add_sized(
-                            [200.0, 28.0],
-                            egui::TextEdit::singleline(&mut server_settings.public_ip),
-                        );
-                        ui.end_row();
+                ui.label("Public IP:")
+                    .on_hover_text_at_pointer("Leave empty for LAN-only.");
+                ui.add_sized(
+                    [200.0, 28.0],
+                    egui::TextEdit::singleline(&mut server_settings.public_ip)
+                        .horizontal_align(egui::Align::Center),
+                )
+                .on_hover_text_at_pointer("Leave empty for LAN-only.");
 
-                        ui.label("Port:");
-                        ui.add_sized(
-                            [200.0, 28.0],
-                            egui::TextEdit::singleline(&mut server_settings.port),
-                        );
-                        ui.end_row();
+                ui.label("Port:");
+                ui.add_sized(
+                    [200.0, 28.0],
+                    egui::TextEdit::singleline(&mut server_settings.port)
+                        .horizontal_align(egui::Align::Center),
+                );
 
-                        ui.label("Max Players:");
-                        ui.add_sized(
-                            [200.0, 28.0],
-                            egui::TextEdit::singleline(&mut server_settings.max_players),
-                        );
-                        ui.end_row();
-                    });
+                ui.label("Max Players:");
+                ui.add_sized(
+                    [200.0, 28.0],
+                    egui::TextEdit::singleline(&mut server_settings.max_players)
+                        .horizontal_align(egui::Align::Center),
+                );
 
                 ui.add_space(20.0);
                 if ui
@@ -221,8 +230,7 @@ fn handle_ui(
                         private_ip
                     };
                     let Ok(max_clients) = server_settings.max_players.parse::<usize>() else {
-                        server_settings.error_message =
-                            "Invalid max players (must be a number)".to_string();
+                        server_settings.error_message = "Invalid max players".to_string();
                         return;
                     };
                     if max_clients > 1024 {
@@ -237,14 +245,24 @@ fn handle_ui(
                         ips.push(SocketAddr::V4(SocketAddrV4::new(public_ip, port)));
                     }
 
-                    let socket = UdpSocket::bind(ips[0]).unwrap();
+                    let socket = match UdpSocket::bind(ips[0]) {
+                        Ok(socket) => socket,
+                        Err(err) => {
+                            server_settings.error_message = err.to_string();
+                            return;
+                        }
+                    };
+
+                    let version = env!("CARGO_PKG_VERSION").split(".").collect::<Vec<_>>();
 
                     let server_config = ServerConfig {
                         current_time: SystemTime::now()
                             .duration_since(SystemTime::UNIX_EPOCH)
-                            .unwrap(),
+                            .expect("system clock is wrong"),
                         max_clients,
-                        protocol_id: hash(env!("CARGO_PKG_VERSION")),
+                        protocol_id: version[0].parse::<u64>().unwrap() * 1_000_000
+                            + version[1].parse::<u64>().unwrap() * 1_000
+                            + version[2].parse::<u64>().unwrap(),
                         public_addresses: ips,
                         authentication: ServerAuthentication::Unsecure,
                     };
@@ -253,6 +271,7 @@ fn handle_ui(
                     commands.insert_resource(
                         NetcodeServerTransport::new(server_config, socket).unwrap(),
                     );
+                    commands.insert_resource(GameInfo::default());
 
                     server_settings.running = true;
                 }
@@ -263,28 +282,18 @@ fn handle_ui(
     Ok(())
 }
 
-pub fn autosave(
+pub fn autosave_and_exit(
     mut app_exit: EventWriter<AppExit>,
     mut last_save: Local<f32>,
     persistent_world: Option<ResMut<Persistent<SavedWorld>>>,
     server: Option<ResMut<RenetServer>>,
     window: Query<&Window, With<PrimaryWindow>>,
-    game_info: Res<GameInfo>,
+    game_info: Option<Res<GameInfo>>,
     time: Res<Time>,
 ) {
     if window.is_empty() {
         info!("saving and exiting");
-        // if let Ok(player) = player.single()
-        //     && let Ok(camera) = camera.single()
-        // {
-        save_game(
-            persistent_world,
-            // player.0,
-            // camera,
-            // player.1.velocity,
-            &game_info,
-        );
-        // }
+        save_game(persistent_world, game_info);
         if let Some(mut client) = server {
             client.disconnect_all();
         }
@@ -294,18 +303,9 @@ pub fn autosave(
 
     let elapsed = time.elapsed_secs_wrapped();
 
-    if elapsed > *last_save + 60.0 {
-        // if let Ok(player) = player.single()
-        //     && let Ok(camera) = camera.single()
-        // {
-        save_game(
-            persistent_world,
-            // player.0,
-            // camera,
-            // player.1.velocity,
-            &game_info,
-        );
-        // }
+    // 10 minute autosave
+    if elapsed > *last_save + 600.0 {
+        save_game(persistent_world, game_info);
         *last_save = elapsed;
     }
 
@@ -316,23 +316,20 @@ pub fn autosave(
 
 pub fn save_game(
     persistent_world: Option<ResMut<Persistent<SavedWorld>>>,
-    // player: &Transform,
-    // camera: &Transform,
-    // velocity: Vec3,
-    game_info: &GameInfo,
+    game_info: Option<Res<GameInfo>>,
 ) {
-    if let Some(mut persistent_world) = persistent_world {
-        persistent_world
-            .update(|sc| {
-                // sc.1.0 = player.translation;
-                // sc.1.1 = velocity;
-                // let (_, pitch, _) = camera.rotation.to_euler(EulerRot::YXZ);
-                // let (yaw, _, _) = player.rotation.to_euler(EulerRot::YXZ);
-                // sc.1.2 = yaw;
-                // sc.1.3 = pitch;
-                sc.2 = game_info.saved_chunks.clone();
+    if let Some(mut persistent_world) = persistent_world
+        && let Some(game_info) = game_info
+        && persistent_world
+            .update(|SavedWorld(_, players, chunks)| {
+                for (_player_id, (name, pos)) in game_info.players.iter() {
+                    players.insert(name.clone(), (*pos, Vec3::ZERO, 0.0, 0.0));
+                }
+                *chunks = game_info.saved_chunks.clone();
             })
-            .unwrap();
+            .is_err()
+    {
+        error!("Failed to save game");
     }
 }
 
@@ -340,46 +337,47 @@ fn handle_events(
     mut server: ResMut<RenetServer>,
     transport: Res<NetcodeServerTransport>,
     mut server_events: EventReader<ServerEvent>,
-    mut player_data: ResMut<PlayerData>,
     mut persistent_world: ResMut<Persistent<SavedWorld>>,
     mut game_info: ResMut<GameInfo>,
 ) {
-    'event: for event in server_events.read() {
+    for event in server_events.read() {
         match *event {
             ServerEvent::ClientConnected { client_id } => {
                 println!("Client {client_id} connected");
                 let name = String::from_utf8_lossy(&transport.user_data(client_id).unwrap())
                     .trim_end_matches(0 as char)
                     .to_string();
-                for (n, _) in player_data.0.values() {
-                    if n == &name {
-                        println!("Player {name} already connected");
-                        server.disconnect(client_id);
-                        continue 'event;
-                    }
+                if game_info.players.values().any(|(n, _)| n == &name) {
+                    println!("Player {name} already connected");
+                    server.disconnect(client_id);
+                    continue;
                 }
                 let pos = persistent_world
                     .1
                     .get(&name)
                     .unwrap_or(&(Vec3::INFINITY, Vec3::ZERO, 0.0, 0.0))
                     .0;
-                player_data.0.insert(client_id, (name.clone(), pos));
-                ServerPacket::ClientConnected(name, pos).broadcast_except(&mut server, client_id);
+                game_info.players.insert(client_id, (name.clone(), pos));
+                ServerPacket::PlayerConnected(name, pos).broadcast_except(&mut server, client_id);
                 ServerPacket::ConnectionInfo(persistent_world.0, pos).send(&mut server, client_id);
-                ServerPacket::PlayerData(player_data.0.clone()).broadcast(&mut server);
+                ServerPacket::PlayerData(game_info.players.values().cloned().collect())
+                    .broadcast(&mut server);
             }
             ServerEvent::ClientDisconnected { client_id, reason } => {
-                println!("Client {client_id} disconnected: {reason}");
-                ServerPacket::ClientDisconnected(client_id, reason.to_string())
-                    .broadcast_except(&mut server, client_id);
-                persistent_world
-                    .update(|sc| {
-                        let default = ("".into(), Vec3::INFINITY);
-                        let player_data = player_data.0.get(&client_id).unwrap_or(&default);
-                        sc.1.insert(player_data.0.clone(), (player_data.1, Vec3::ZERO, 0.0, 0.0));
-                    })
-                    .unwrap();
-                player_data.0.remove(&client_id);
+                if let Some((name, pos)) = game_info.players.get(&client_id) {
+                    println!("Client {client_id} disconnected: {reason}");
+                    ServerPacket::PlayerDisconnected(name.clone(), reason.to_string())
+                        .broadcast_except(&mut server, client_id);
+                    if persistent_world
+                        .update(|sc| {
+                            sc.1.insert(name.clone(), (*pos, Vec3::ZERO, 0.0, 0.0));
+                        })
+                        .is_err()
+                    {
+                        error!("Failed to save player data");
+                    }
+                    game_info.players.remove(&client_id);
+                }
             }
         }
     }
@@ -393,7 +391,16 @@ fn handle_events(
             };
             match packet {
                 ClientPacket::ChatMessage(msg) => {
-                    ServerPacket::ChatMessage(msg).broadcast_except(&mut server, client_id);
+                    ServerPacket::ChatMessage(game_info.players[&client_id].0.clone(), msg)
+                        .broadcast(&mut server);
+                }
+                ClientPacket::LoadChunks(chunks) => {
+                    for chunk in chunks {
+                        if let Some(saved_chunk) = game_info.saved_chunks.get(&chunk) {
+                            ServerPacket::ChunkUpdate(chunk, saved_chunk.clone())
+                                .send(&mut server, client_id);
+                        }
+                    }
                 }
                 ClientPacket::PlaceBlock(pos, block) => {
                     let chunk_pos = ivec3(
@@ -401,37 +408,29 @@ fn handle_events(
                         0,
                         pos.z.div_euclid(CHUNK_SIZE),
                     );
-                    match game_info.saved_chunks.entry(chunk_pos) {
-                        Entry::Vacant(e) => {
-                            e.insert(SavedChunk {
-                                blocks: HashMap::from([(
-                                    ivec3(
-                                        pos.x.rem_euclid(CHUNK_SIZE),
-                                        pos.y,
-                                        pos.z.rem_euclid(CHUNK_SIZE),
-                                    ),
-                                    block,
-                                )]),
-                                entities: Vec::new(),
-                            });
-                        }
-                        Entry::Occupied(mut e) => {
-                            e.get_mut().blocks.insert(
-                                ivec3(
-                                    pos.x.rem_euclid(CHUNK_SIZE),
-                                    pos.y,
-                                    pos.z.rem_euclid(CHUNK_SIZE),
-                                ),
-                                block,
-                            );
-                        }
-                    }
+
+                    let block_pos = ivec3(
+                        pos.x.rem_euclid(CHUNK_SIZE),
+                        pos.y,
+                        pos.z.rem_euclid(CHUNK_SIZE),
+                    );
+
+                    game_info
+                        .saved_chunks
+                        .entry(chunk_pos)
+                        .and_modify(|c| {
+                            c.blocks.insert(block_pos, block);
+                        })
+                        .or_insert(SavedChunk {
+                            blocks: HashMap::from([(block_pos, block)]),
+                            entities: Vec::new(),
+                        });
 
                     let player_ids = server
                         .clients_id_iter()
                         .filter(|id| {
-                            player_data
-                                .0
+                            game_info
+                                .players
                                 .get(id)
                                 .unwrap()
                                 .1
@@ -441,8 +440,6 @@ fn handle_events(
                                 > 64
                         })
                         .collect::<Vec<_>>();
-
-                    info!("Sending chunk update to {} clients", player_ids.len());
 
                     for id in player_ids {
                         if id == client_id {
@@ -464,10 +461,10 @@ fn handle_events(
             };
             match packet {
                 ClientPacket::Move(pos) => {
-                    player_data.0.entry(client_id).and_modify(|x| {
+                    game_info.players.entry(client_id).and_modify(|x| {
                         x.1 = pos;
                     });
-                    ServerPacket::PlayerData(player_data.0.clone())
+                    ServerPacket::PlayerData(game_info.players.values().cloned().collect())
                         .broadcast_except(&mut server, client_id);
                 }
                 _ => {}

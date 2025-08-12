@@ -13,10 +13,9 @@ use crate::{
     },
 };
 
+pub mod mesher;
+pub mod systems;
 pub mod utils;
-
-mod mesher;
-mod systems;
 
 pub struct WorldPlugin;
 
@@ -70,7 +69,7 @@ pub struct Chunk {
 }
 
 #[derive(Component)]
-struct ComputeChunk(Task<Chunk>, IVec3);
+pub struct ComputeChunk(pub Task<Chunk>, pub IVec3);
 
 #[derive(Component)]
-struct ComputeChunkMesh(Task<Option<ChunkMesh>>, IVec3);
+pub struct ComputeChunkMesh(pub Task<Option<ChunkMesh>>, pub IVec3);
