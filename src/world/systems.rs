@@ -1,5 +1,3 @@
-use std::collections::hash_map::Entry;
-
 use bevy::{
     asset::RenderAssetUsages,
     prelude::*,
@@ -12,7 +10,7 @@ use bevy::{
 };
 use bevy_persistent::Persistent;
 use bevy_renet::renet::RenetClient;
-use ferriscraft::{GameEntity, GameEntityKind, SEA_LEVEL, SavedChunk, SavedWorld};
+use ferriscraft::{ClientPacket, GameEntity, GameEntityKind, SEA_LEVEL, SavedChunk, SavedWorld};
 use rayon::slice::ParallelSliceMut;
 
 use crate::{
@@ -35,22 +33,12 @@ pub fn autosave_and_exit(
     player: Query<(&Transform, &Player)>,
     camera: Query<&Transform, With<PlayerCamera>>,
     game_settings: Res<GameSettings>,
-    game_info: Res<GameInfo>,
+    game_info: Option<Res<GameInfo>>,
     time: Res<Time>,
 ) {
     if window.is_empty() {
         info!("saving and exiting");
-        if let Ok(player) = player.single()
-            && let Ok(camera) = camera.single()
-        {
-            save_game(
-                persistent_world,
-                player.0,
-                camera,
-                player.1.velocity,
-                &game_info,
-            );
-        }
+        save_game(persistent_world, player, camera, game_info);
         if let Some(mut client) = client {
             client.disconnect();
         }
@@ -60,18 +48,9 @@ pub fn autosave_and_exit(
 
     let elapsed = time.elapsed_secs_wrapped();
 
-    if game_settings.autosave && elapsed > *last_save + 60.0 {
-        if let Ok(player) = player.single()
-            && let Ok(camera) = camera.single()
-        {
-            save_game(
-                persistent_world,
-                player.0,
-                camera,
-                player.1.velocity,
-                &game_info,
-            );
-        }
+    // 10 minute autosave
+    if game_settings.autosave && elapsed > *last_save + 600.0 {
+        save_game(persistent_world, player, camera, game_info);
         *last_save = elapsed;
     }
 
@@ -82,20 +61,25 @@ pub fn autosave_and_exit(
 
 pub fn save_game(
     persistent_world: Option<ResMut<Persistent<SavedWorld>>>,
-    player: &Transform,
-    camera: &Transform,
-    velocity: Vec3,
-    game_info: &GameInfo,
+    player: Query<(&Transform, &Player)>,
+    camera: Query<&Transform, With<PlayerCamera>>,
+    game_info: Option<Res<GameInfo>>,
 ) {
-    if let Some(mut persistent_world) = persistent_world {
+    if let Some(mut persistent_world) = persistent_world
+        && let Some(game_info) = game_info
+    {
         persistent_world
             .update(|sc| {
-                let (_, pitch, _) = camera.rotation.to_euler(EulerRot::YXZ);
-                let (yaw, _, _) = player.rotation.to_euler(EulerRot::YXZ);
-                sc.1.insert(
-                    "Player".to_string(),
-                    (player.translation, velocity, yaw, pitch),
-                );
+                if let Ok(player) = player.single()
+                    && let Ok(camera) = camera.single()
+                {
+                    let (_, pitch, _) = camera.rotation.to_euler(EulerRot::YXZ);
+                    let (yaw, _, _) = player.0.rotation.to_euler(EulerRot::YXZ);
+                    sc.1.insert(
+                        game_info.player_name.clone(),
+                        (player.0.translation, player.1.velocity, yaw, pitch),
+                    );
+                }
                 if let Some(saved_chunks) = &game_info.saved_chunks {
                     sc.2 = saved_chunks.read().unwrap().clone();
                 }
@@ -109,11 +93,14 @@ pub fn handle_chunk_gen(
     game_info: Res<GameInfo>,
     game_settings: Res<GameSettings>,
     player: Single<&Transform, With<Player>>,
+    client: Option<ResMut<RenetClient>>,
 ) {
     let pt = player.translation;
     let thread_pool = AsyncComputeTaskPool::get();
     let render_distance = game_settings.render_distance;
     let noises = game_info.noises;
+
+    let mut chunks_to_load = Vec::new();
 
     for chunk_z in
         (pt.z as i32 / CHUNK_SIZE - render_distance)..(pt.z as i32 / CHUNK_SIZE + render_distance)
@@ -142,6 +129,8 @@ pub fn handle_chunk_gen(
             {
                 game_info.loading_chunks.write().unwrap().insert(pos);
             }
+
+            chunks_to_load.push(pos);
 
             let chunks = game_info.chunks.clone();
             let saved_chunks = game_info.saved_chunks.clone();
@@ -227,6 +216,9 @@ pub fn handle_chunk_gen(
             });
             commands.spawn(ComputeChunk(task, pos));
         }
+    }
+    if !chunks_to_load.is_empty() {
+        ClientPacket::LoadChunks(chunks_to_load).send(client);
     }
 }
 
@@ -332,20 +324,17 @@ pub fn process_tasks(
         }
         if let Some(mut chunk) = future::block_on(future::poll_once(&mut compute_task.0)) {
             if let Some(saved_chunks) = &mut saved_chunks {
-                match saved_chunks.entry(chunk.pos) {
-                    Entry::Vacant(e) => {
-                        e.insert(SavedChunk {
-                            entities: chunk.entities.clone(),
-                            ..default()
-                        });
-                    }
-                    Entry::Occupied(mut e) => {
-                        let saved_chunk = e.get_mut();
-                        if saved_chunk.entities != chunk.entities {
-                            saved_chunk.entities = chunk.entities.clone();
+                saved_chunks
+                    .entry(chunk.pos)
+                    .and_modify(|c| {
+                        if c.entities != chunk.entities {
+                            c.entities = chunk.entities.clone();
                         }
-                    }
-                }
+                    })
+                    .or_insert(SavedChunk {
+                        entities: chunk.entities.clone(),
+                        ..default()
+                    });
             }
 
             for (e, game_entity) in &mut chunk.entities {

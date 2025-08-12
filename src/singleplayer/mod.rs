@@ -32,8 +32,8 @@ pub struct SPSavedWorld(pub String);
 
 fn setup(
     mut commands: Commands,
-    mut materials: ResMut<Assets<StandardMaterial>>,
     mut window: Single<&mut Window, With<PrimaryWindow>>,
+    mut game_info: ResMut<GameInfo>,
     new_world: Option<Res<SPNewWorld>>,
     saved_world: Option<Res<SPSavedWorld>>,
     camera: Single<Entity, With<Camera3d>>,
@@ -63,23 +63,12 @@ fn setup(
                 .expect("World save couldn't be read, please make a backup of saves/world.ferris and remove it from the saves folder.")
     };
 
-    let mut mats = Vec::new();
-    mats.push(materials.add(StandardMaterial {
-        base_color_texture: Some(asset_server.load("atlas.ktx2")),
-        reflectance: 0.0,
-        ..default()
-    }));
-    let mut models = Vec::new();
-    models.push(asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/ferris.glb")));
+    let SavedWorld(seed, players, saved_chunks) = persistent.get();
 
-    let game_info = GameInfo {
-        noises: get_noise_functions(persistent.0),
-        materials: mats,
-        models,
-        saved_chunks: Some(Arc::new(RwLock::new(persistent.2.clone()))),
-        current_block: BlockKind::Stone,
-        ..default()
-    };
+    game_info.noises = get_noise_functions(*seed);
+    game_info.saved_chunks = Some(Arc::new(RwLock::new(saved_chunks.clone())));
+    game_info.current_block = BlockKind::Stone;
+    game_info.player_name = "Player".to_string();
 
     set_cursor_grab(&mut window, true);
 
@@ -99,9 +88,8 @@ fn setup(
         StateScoped(GameState::SinglePlayer),
     ));
 
-    let &(player_pos, player_velocity, player_yaw, player_pitch) = persistent
-        .1
-        .get("Player")
+    let &(player_pos, player_velocity, player_yaw, player_pitch) = players
+        .get(&game_info.player_name)
         .unwrap_or(&(Vec3::INFINITY, Vec3::ZERO, 0.0, 0.0));
 
     let player = commands
@@ -146,6 +134,5 @@ fn setup(
         commands.spawn(hotbar_block(hotbar, node.clone(), i));
     }
 
-    commands.insert_resource(game_info);
     commands.insert_resource(persistent);
 }
