@@ -4,6 +4,7 @@ use std::{
 };
 
 use bevy::{prelude::*, window::PrimaryWindow};
+use bevy_mod_billboard::BillboardText;
 use bevy_renet::{
     RenetClientPlugin,
     netcode::{
@@ -19,6 +20,7 @@ use crate::{
     player::{OnlinePlayer, camera_bundle, player_bundle},
     ui::{GameState, MenuState, coords_bundle, hotbar_block, hotbar_bundle, root_ui_bundle},
     utils::{get_noise_functions, set_cursor_grab},
+    world::{ChunkMarker, utils::place_block},
 };
 
 pub struct MultiplayerPlugin;
@@ -40,7 +42,9 @@ impl Plugin for MultiplayerPlugin {
 pub struct MultiplayerMenuInput(pub SocketAddr, pub String);
 
 fn setup(mut commands: Commands, multiplayer_input: Res<MultiplayerMenuInput>) {
-    let client_id = rand::random();
+    let current_time = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("system clock is wrong");
 
     let mut user_data = [0; NETCODE_USER_DATA_BYTES];
     // let name = std::env::args()
@@ -53,12 +57,10 @@ fn setup(mut commands: Commands, multiplayer_input: Res<MultiplayerMenuInput>) {
     commands.insert_resource(RenetClient::new(ConnectionConfig::default()));
     commands.insert_resource(
         NetcodeClientTransport::new(
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap(),
+            current_time,
             ClientAuthentication::Unsecure {
                 server_addr: multiplayer_input.0,
-                client_id,
+                client_id: current_time.as_millis() as u64,
                 user_data: Some(user_data),
                 protocol_id: hash(env!("CARGO_PKG_VERSION")),
             },
@@ -204,28 +206,27 @@ fn send_client_data(
 fn receive_server_data(
     mut commands: Commands,
     mut client: ResMut<RenetClient>,
-    mut players: Query<(Entity, &mut Transform, &OnlinePlayer)>,
+    mut players: Query<(Entity, &mut Transform, &OnlinePlayer), Without<ChunkMarker>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut client_event: EventWriter<ClientEvent>,
+    chunks: Query<(Entity, &Transform), With<ChunkMarker>>,
+    game_info: Res<GameInfo>,
     transport: Res<NetcodeClientTransport>,
 ) {
     while let Some(message) = client.receive_message(DefaultChannel::ReliableOrdered) {
-        let packet: ServerPacket = bincode::deserialize(&message).unwrap();
+        let Ok(packet) = bincode::deserialize(&message) else {
+            continue;
+        };
         match packet {
             ServerPacket::ChatMessage(msg) => {
                 println!("Received chat message: {msg}");
             }
             ServerPacket::ClientConnected(id, pos) => {
-                if id != transport.client_id() {
-                    commands.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(1.0, 2.0, 1.0))),
-                        MeshMaterial3d(materials.add(StandardMaterial::default())),
-                        Transform::from_translation(pos),
-                        Name::new("Player".to_string() + &id.to_string()),
-                        OnlinePlayer(id),
-                    ));
-                }
+                println!("Client {id} connected at {pos}");
+                // if id != transport.client_id() {
+
+                // }
             }
             ServerPacket::ClientDisconnected(id, reason) => {
                 if id != transport.client_id()
@@ -243,26 +244,51 @@ fn receive_server_data(
         }
     }
     while let Some(message) = client.receive_message(DefaultChannel::Unreliable) {
-        let packet: ServerPacket = bincode::deserialize(&message).unwrap();
-        if let ServerPacket::PlayerData(data) = packet {
-            for (&id, (name, pos)) in data.iter() {
-                if id == transport.client_id() {
-                    continue;
-                }
-                if let Some((_, mut transform, _)) =
-                    players.iter_mut().find(|(_, _, player)| player.0 == id)
-                {
-                    *transform = Transform::from_translation(pos + Vec3::Y);
-                } else {
-                    commands.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(1.0, 2.0, 1.0))),
-                        MeshMaterial3d(materials.add(StandardMaterial::default())),
-                        Transform::from_translation(pos + Vec3::Y),
-                        Name::new("Player".to_string() + name),
-                        OnlinePlayer(id),
-                    ));
+        let Ok(packet) = bincode::deserialize(&message) else {
+            continue;
+        };
+        match packet {
+            ServerPacket::PlayerData(data) => {
+                for (&id, (name, pos)) in data.iter() {
+                    if id == transport.client_id() {
+                        continue;
+                    }
+                    if let Some((_, mut transform, _)) =
+                        players.iter_mut().find(|(_, _, player)| player.0 == id)
+                    {
+                        transform.translation = pos + Vec3::Y
+                    } else {
+                        commands
+                            .spawn((
+                                Mesh3d(meshes.add(Capsule3d::new(0.35, 1.2))),
+                                MeshMaterial3d(materials.add(StandardMaterial::default())),
+                                Transform::from_translation(pos + Vec3::Y),
+                                Name::new("Player ".to_string() + name),
+                                OnlinePlayer(id),
+                            ))
+                            .with_child((
+                                BillboardText::new(name),
+                                Transform::from_xyz(0.0, 1.5, 0.0).with_scale(Vec3::splat(0.02)),
+                            ));
+                    }
                 }
             }
+            ServerPacket::ChunkUpdate(chunk_pos, chunk) => {
+                if let Some(old_chunk) = game_info.chunks.write().unwrap().get_mut(&chunk_pos) {
+                    for (pos, block) in chunk.blocks {
+                        place_block(
+                            &mut commands,
+                            None,
+                            &game_info,
+                            old_chunk,
+                            &chunks,
+                            pos,
+                            block,
+                        );
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
