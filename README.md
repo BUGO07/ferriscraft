@@ -24,6 +24,7 @@
 
 `WASD/Space` - movement\
 `LControl` - sprint
+`LShift` - sneak
 `LMB/RMB` - place/break blocks\
 `1-9/ScrollWheel+-` - switch blocks\
 `C` - zoom\
@@ -34,7 +35,8 @@
 `F6` chunk borders\
 `F7` super secret settings\
 `F8` toggle wireframe\
-`F11` toggle fullscreen
+`F11` toggle fullscreen\
+`ESC` pause
 
 ## TODO
 
@@ -50,6 +52,8 @@ Make sure you have the latest version of nightly [rust](https://rustup.rs/).
 `git clone --depth=1 https://github.com/BUGO07/ferriscraft`
 
 2. Go to the root directory of the cloned repo and run `cargo run`
+
+3. (Optional) `cargo run --bin server` to run the server
 
 ## Credits
 

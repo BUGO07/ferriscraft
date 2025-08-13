@@ -29,16 +29,19 @@ use bevy::{
 };
 use bevy_framepace::FramepacePlugin;
 use bevy_mod_billboard::plugin::BillboardPlugin;
-use ferriscraft::{BlockKind, CHUNK_HEIGHT, CHUNK_SIZE, GameEntity, GameEntityKind, SavedChunk};
+use bevy_persistent::Persistent;
+use ferriscraft::{
+    BlockKind, CHUNK_HEIGHT, CHUNK_SIZE, GameEntity, GameEntityKind, SavedChunk, SavedWorld,
+};
 
 use crate::{
     multiplayer::client::MultiplayerPlugin,
-    player::{Player, PlayerCamera, PlayerPlugin},
+    player::{Player, PlayerPlugin},
     render_pipeline::{PostProcessSettings, RenderPipelinePlugin},
     singleplayer::SinglePlayerPlugin,
     ui::{GameState, MenuState, UIPlugin},
     utils::set_cursor_grab,
-    world::{Chunk, WorldPlugin, utils::NoiseFunctions},
+    world::{Chunk, WorldPlugin, systems::save_game, utils::NoiseFunctions},
 };
 
 mod multiplayer;
@@ -102,10 +105,10 @@ fn main() {
         .insert_resource(GameSettings {
             render_distance: 16,
             movement_speed: 4.32,
-            jump_force: 7.7,
+            jump_force: 8.0,
             sensitivity: 1.2,
             fov: 60,
-            gravity: -23.31,
+            gravity: -32.0,
             autosave: true,
             despawn_chunks: true,
             #[cfg(debug_assertions)]
@@ -218,26 +221,21 @@ struct GameSettings {
 
 fn handle_keybinds(
     mut commands: Commands,
-    // mut persistent_world: Option<ResMut<Persistent<SavedWorld>>>,
     mut primary_window: Single<&mut Window, With<PrimaryWindow>>,
     mut wireframe_config: ResMut<WireframeConfig>,
     mut game_settings: ResMut<GameSettings>,
     mut game_info: ResMut<GameInfo>,
-    mut camera: Single<(&Transform, &mut PostProcessSettings, &mut Projection), With<PlayerCamera>>,
-    // player: Single<(&Transform, &Player)>,
+    mut camera: Single<(&Transform, &mut PostProcessSettings, &mut Projection), With<Camera3d>>,
+    persistent_world: Option<ResMut<Persistent<SavedWorld>>>,
+    player: Query<(&Transform, &Player)>,
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
+    // borrowchecker...
+    if keyboard.just_pressed(KeyCode::F1) {
+        save_game(persistent_world, player, Some(camera.0), Some(&game_info));
+    }
     for button in keyboard.get_just_pressed() {
         match button {
-            KeyCode::F1 => {
-                // save_game(
-                //     &mut persistent_world,
-                //     player.0,
-                //     camera.0,
-                //     player.1.velocity,
-                //     &game_info,
-                // );
-            }
             KeyCode::F2 => {
                 commands
                     .spawn(Screenshot::primary_window())

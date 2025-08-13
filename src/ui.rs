@@ -87,8 +87,21 @@ impl Plugin for UIPlugin {
         .add_systems(OnEnter(MenuState::MultiPlayer), multiplayer_menu)
         .add_systems(OnEnter(GameState::Menu), ungrab_cursor)
         .add_systems(OnExit(GameState::Menu), grab_cursor)
-        .add_systems(Update, (handle_errors, handle_buttons, handle_textboxes).run_if(in_state(GameState::Menu)))
-        .add_systems(Update, handle_hud.run_if(not(in_state(GameState::Menu))));
+        .add_systems(Update, (handle_errors, handle_buttons, handle_textboxes))
+        .add_systems(Update, handle_hud.run_if(not(in_state(GameState::Menu))))
+        .add_systems(Update, pause_menu.run_if(not(in_state(GameState::Menu)))
+            .run_if(|game_settings: Res<GameSettings>, mut was_paused: Local<bool>| {
+                if !*was_paused && game_settings.paused {
+                    *was_paused = true;
+                    return true;
+                }
+                if *was_paused && !game_settings.paused {
+                    *was_paused = false;
+                    return true;
+                }
+                false
+            })
+        );
     }
 }
 
@@ -135,6 +148,63 @@ pub struct SavedWorldMarker(pub bool);
 fn setup(mut commands: Commands, camera: Query<Entity, With<Camera>>) {
     if camera.single().is_err() {
         commands.spawn(Camera3d::default());
+    }
+}
+
+#[derive(Component)]
+pub struct PuaseMenu;
+
+fn pause_menu(
+    mut commands: Commands,
+    game_settings: ResMut<GameSettings>,
+    pause_menu_query: Query<Entity, With<PuaseMenu>>,
+) {
+    if game_settings.paused {
+        let ui = commands
+            .spawn(root_ui_bundle())
+            .insert(BackgroundColor(Color::BLACK.with_alpha(0.7)))
+            .insert(PuaseMenu)
+            .id();
+
+        let vertical = commands.spawn(vertical_ui_bundle(ui)).id();
+
+        commands
+            .spawn(button("Back", vertical, 300.0, 60.0))
+            .observe(
+                |_trigger: Trigger<Pointer<Released>>,
+                 mut game_settings: ResMut<GameSettings>,
+                 mut window: Single<&mut Window, With<PrimaryWindow>>| {
+                    game_settings.paused = false;
+                    set_cursor_grab(&mut window, true);
+                },
+            );
+        commands.spawn(button("Settings", vertical, 300.0, 60.0));
+        // .observe(
+        //     |_trigger: Trigger<Pointer<Released>>, mut state: ResMut<NextState<MenuState>>| {
+        //         state.set(MenuState::MultiPlayer);
+        //     },
+        // );
+        commands
+            .spawn(button("Leave", vertical, 300.0, 60.0))
+            .observe(
+                |_trigger: Trigger<Pointer<Released>>,
+                 mut commands: Commands,
+                 mut game_settings: ResMut<GameSettings>,
+                 mut game_state: ResMut<NextState<GameState>>,
+                 mut menu_state: ResMut<NextState<MenuState>>,
+                 pause_menu_query: Query<Entity, With<PuaseMenu>>| {
+                    for entity in pause_menu_query.iter() {
+                        commands.entity(entity).despawn();
+                    }
+                    game_settings.paused = false;
+                    game_state.set(GameState::Menu);
+                    menu_state.set(MenuState::Main);
+                },
+            );
+    } else {
+        for entity in pause_menu_query.iter() {
+            commands.entity(entity).despawn();
+        }
     }
 }
 

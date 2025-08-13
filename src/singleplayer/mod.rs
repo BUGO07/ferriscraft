@@ -4,23 +4,31 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use bevy::{prelude::*, window::PrimaryWindow};
+use bevy::{
+    core_pipeline::{Skybox, bloom::Bloom, experimental::taa::TemporalAntiAliasing},
+    pbr::ScreenSpaceAmbientOcclusion,
+    prelude::*,
+    window::PrimaryWindow,
+};
 use bevy_persistent::{Persistent, StorageFormat};
 use ferriscraft::{BlockKind, SavedWorld};
 use iyes_perf_ui::prelude::PerfUiAllEntries;
 
 use crate::{
     GameInfo,
-    player::{camera_bundle, player_bundle},
+    player::{Player, camera_bundle, player_bundle},
+    render_pipeline::PostProcessSettings,
     ui::{GameState, coords_bundle, hotbar_block, hotbar_bundle, root_ui_bundle},
     utils::{get_noise_functions, set_cursor_grab},
+    world::systems::save_game,
 };
 
 pub struct SinglePlayerPlugin;
 
 impl Plugin for SinglePlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(GameState::SinglePlayer), setup);
+        app.add_systems(OnEnter(GameState::SinglePlayer), setup)
+            .add_systems(OnExit(GameState::SinglePlayer), cleanup);
     }
 }
 
@@ -29,6 +37,31 @@ pub struct SPNewWorld(pub String, pub u32);
 
 #[derive(Resource)]
 pub struct SPSavedWorld(pub String);
+
+fn cleanup(
+    mut commands: Commands,
+    mut game_info: ResMut<GameInfo>,
+    persistent_world: Option<ResMut<Persistent<SavedWorld>>>,
+    player: Query<(&Transform, &Player)>,
+    camera: Single<(Entity, &Transform), With<Camera3d>>,
+) {
+    save_game(persistent_world, player, Some(camera.1), Some(&game_info));
+    commands.remove_resource::<Persistent<SavedWorld>>();
+    commands.remove_resource::<SPNewWorld>();
+    commands.remove_resource::<SPSavedWorld>();
+
+    game_info.chunks = default();
+    game_info.saved_chunks = default();
+    game_info.loading_chunks = default();
+    commands.entity(camera.0).remove::<(
+        TemporalAntiAliasing,
+        PostProcessSettings,
+        Skybox,
+        Bloom,
+        ScreenSpaceAmbientOcclusion,
+        ChildOf,
+    )>();
+}
 
 fn setup(
     mut commands: Commands,
