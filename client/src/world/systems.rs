@@ -8,9 +8,8 @@ use bevy::{
     tasks::{AsyncComputeTaskPool, futures_lite::future},
     window::PrimaryWindow,
 };
-use bevy_persistent::Persistent;
 use bevy_renet::renet::RenetClient;
-use ferriscraft::{ClientPacket, GameEntity, GameEntityKind, SEA_LEVEL, SavedWorld};
+use ferriscraft::{ClientPacket, GameEntity, GameEntityKind, Persistent, SEA_LEVEL, SavedWorld};
 use rayon::slice::ParallelSliceMut;
 
 use crate::{

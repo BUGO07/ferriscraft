@@ -16,9 +16,9 @@ use eframe::egui;
 use renet::{ConnectionConfig, RenetServer};
 use renet_netcode::{NetcodeServerTransport, ServerAuthentication, ServerConfig};
 
-use ferriscraft::{DEFAULT_SERVER_PORT, SavedWorld};
+use ferriscraft::{DEFAULT_SERVER_PORT, Persistent, SavedWorld};
 
-use crate::{events::handle_events, utils::Persistent};
+use crate::events::handle_events;
 
 mod events;
 mod utils;

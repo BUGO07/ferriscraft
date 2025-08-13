@@ -1,11 +1,11 @@
 use std::collections::{HashMap, VecDeque};
 
 use bevy_math::{Vec3, ivec3};
-use ferriscraft::{CHUNK_SIZE, ClientPacket, SavedChunk, SavedWorld, ServerPacket};
+use ferriscraft::{CHUNK_SIZE, ClientPacket, Persistent, SavedChunk, SavedWorld, ServerPacket};
 use renet::{DefaultChannel, RenetServer, ServerEvent};
 use renet_netcode::NetcodeServerTransport;
 
-use crate::{log, utils::Persistent};
+use crate::log;
 
 pub fn handle_events(
     server: &mut RenetServer,
