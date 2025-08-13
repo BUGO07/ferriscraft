@@ -29,9 +29,9 @@ use bevy::{
 };
 use bevy_framepace::FramepacePlugin;
 use bevy_mod_billboard::plugin::BillboardPlugin;
-use bevy_persistent::Persistent;
 use ferriscraft::{
-    BlockKind, CHUNK_HEIGHT, CHUNK_SIZE, GameEntity, GameEntityKind, SavedChunk, SavedWorld,
+    BlockKind, CHUNK_HEIGHT, CHUNK_SIZE, GameEntity, GameEntityKind, Persistent, SavedChunk,
+    SavedWorld,
 };
 
 use crate::{

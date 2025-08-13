@@ -10,8 +10,7 @@ use bevy::{
     prelude::*,
     window::PrimaryWindow,
 };
-use bevy_persistent::{Persistent, StorageFormat};
-use ferriscraft::{BlockKind, SavedWorld};
+use ferriscraft::{BlockKind, Persistent, SavedWorld};
 use iyes_perf_ui::prelude::PerfUiAllEntries;
 
 use crate::{
@@ -74,29 +73,20 @@ fn setup(
 ) {
     let persistent = if let Some(new_world) = new_world {
         let SPNewWorld(name, seed) = new_world.into_inner();
-        Persistent::<SavedWorld>::builder()
-                .name("saved world")
-                .format(StorageFormat::Bincode)
-                .path(Path::new("saves").join(format!("{}.ferris", name)))
-                .default(SavedWorld(
+        Persistent::<SavedWorld>::new(Path::new("saves").join(format!("{}.ferris", name)),SavedWorld(
                     *seed,
                     HashMap::new(),
                     HashMap::new(),
                 ))
-                .build()
                 .expect("World save couldn't be read, please make a backup of saves/world.ferris and remove it from the saves folder.")
     } else {
         let SPSavedWorld(name) = saved_world.unwrap().into_inner();
-        Persistent::<SavedWorld>::builder()
-                .name("saved world")
-                .format(StorageFormat::Bincode)
-                .path(Path::new("saves").join(format!("{}.ferris", name)))
-                .default(SavedWorld::default())
-                .build()
+        Persistent::<SavedWorld>::new(Path::new("saves").join(format!("{}.ferris", name))
+                ,SavedWorld::default())
                 .expect("World save couldn't be read, please make a backup of saves/world.ferris and remove it from the saves folder.")
     };
 
-    let SavedWorld(seed, players, saved_chunks) = persistent.get();
+    let SavedWorld(seed, players, saved_chunks) = &persistent.data;
 
     game_info.noises = get_noise_functions(*seed);
     game_info.saved_chunks = Some(Arc::new(RwLock::new(saved_chunks.clone())));
