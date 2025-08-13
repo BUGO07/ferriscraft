@@ -15,7 +15,7 @@ use rayon::slice::ParallelSliceMut;
 
 use crate::{
     CHUNK_HEIGHT, CHUNK_SIZE, GameInfo, GameSettings,
-    player::{Player, PlayerCamera},
+    player::Player,
     utils::{TREE_OBJECT, noise, vec3_to_index},
     world::{
         Chunk, ChunkMarker, ComputeChunk, ComputeChunkMesh,
@@ -31,14 +31,19 @@ pub fn autosave_and_exit(
     client: Option<ResMut<RenetClient>>,
     window: Query<&Window, With<PrimaryWindow>>,
     player: Query<(&Transform, &Player)>,
-    camera: Query<&Transform, With<PlayerCamera>>,
+    camera: Query<&Transform, With<Camera3d>>,
     game_settings: Res<GameSettings>,
     game_info: Option<Res<GameInfo>>,
     time: Res<Time>,
 ) {
     if window.is_empty() {
         info!("saving and exiting");
-        save_game(persistent_world, player, camera, game_info);
+        save_game(
+            persistent_world,
+            player,
+            camera.single().ok(),
+            game_info.as_deref(),
+        );
         if let Some(mut client) = client {
             client.disconnect();
         }
@@ -50,7 +55,12 @@ pub fn autosave_and_exit(
 
     // 10 minute autosave
     if game_settings.autosave && elapsed > *last_save + 600.0 {
-        save_game(persistent_world, player, camera, game_info);
+        save_game(
+            persistent_world,
+            player,
+            camera.single().ok(),
+            game_info.as_deref(),
+        );
         *last_save = elapsed;
     }
 
@@ -62,8 +72,8 @@ pub fn autosave_and_exit(
 pub fn save_game(
     persistent_world: Option<ResMut<Persistent<SavedWorld>>>,
     player: Query<(&Transform, &Player)>,
-    camera: Query<&Transform, With<PlayerCamera>>,
-    game_info: Option<Res<GameInfo>>,
+    camera: Option<&Transform>,
+    game_info: Option<&GameInfo>,
 ) {
     if let Some(mut persistent_world) = persistent_world
         && let Some(game_info) = game_info
@@ -71,7 +81,7 @@ pub fn save_game(
         persistent_world
             .update(|sc| {
                 if let Ok(player) = player.single()
-                    && let Ok(camera) = camera.single()
+                    && let Some(camera) = camera
                 {
                     let (_, pitch, _) = camera.rotation.to_euler(EulerRot::YXZ);
                     let (yaw, _, _) = player.0.rotation.to_euler(EulerRot::YXZ);

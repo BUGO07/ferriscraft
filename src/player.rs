@@ -25,34 +25,33 @@ pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup)
-            .add_systems(
-                Update,
-                (camera_movement, handle_interactions).run_if(
-                    not(in_state(GameState::Menu))
-                        .and(|game_settings: Res<GameSettings>| !game_settings.paused),
-                ),
-            )
-            .add_systems(
-                FixedUpdate,
-                player_movement
-                    .run_if(
-                        // only run if chunks have been loaded
-                        |game_info: Option<Res<GameInfo>>,
-                         game_settings: Res<GameSettings>,
-                         mut is_loaded: Local<bool>| {
-                            if !*is_loaded && let Some(game_info) = game_info {
-                                *is_loaded = game_info.chunks.read().unwrap().len()
-                                    == ((game_settings.render_distance * 2)
-                                        * (game_settings.render_distance * 2))
-                                        as usize;
-                            }
-                            *is_loaded
-                        },
-                    )
-                    .run_if(not(in_state(GameState::Menu)))
-                    .in_set(PausableSystems),
-            );
+        app.add_systems(
+            Update,
+            (camera_movement, handle_interactions).run_if(
+                not(in_state(GameState::Menu))
+                    .and(|game_settings: Res<GameSettings>| !game_settings.paused),
+            ),
+        )
+        .add_systems(
+            FixedUpdate,
+            player_movement
+                .run_if(
+                    // only run if chunks have been loaded
+                    |game_info: Option<Res<GameInfo>>,
+                     game_settings: Res<GameSettings>,
+                     mut is_loaded: Local<bool>| {
+                        if !*is_loaded && let Some(game_info) = game_info {
+                            *is_loaded = game_info.chunks.read().unwrap().len()
+                                == ((game_settings.render_distance * 2)
+                                    * (game_settings.render_distance * 2))
+                                    as usize;
+                        }
+                        *is_loaded
+                    },
+                )
+                .run_if(not(in_state(GameState::Menu)))
+                .in_set(PausableSystems),
+        );
     }
 }
 
@@ -64,25 +63,13 @@ pub struct Player {
 #[derive(Component)]
 pub struct OnlinePlayer(pub String);
 
-#[derive(Component)]
-pub struct PlayerCamera;
-
-fn setup(// mut commands: Commands,
-    // persistent_world: Res<Persistent<SavedWorld>>,
-    // asset_server: Res<AssetServer>,
-    // game_info: Res<GameInfo>,
-) {
-    // let &SavedWorld(_, (player_pos, player_velocity, player_yaw, player_pitch), _) =
-    //     persistent_world.get();
-}
-
 fn handle_interactions(
     mut commands: Commands,
     mut gizmos: Gizmos,
     client: Option<ResMut<RenetClient>>,
     game_info: Res<GameInfo>,
-    player: Single<&Transform, (With<Player>, Without<PlayerCamera>)>,
-    camera: Single<&GlobalTransform, (With<PlayerCamera>, Without<Player>)>,
+    player: Single<&Transform, With<Player>>,
+    camera: Single<&GlobalTransform, With<Camera3d>>,
     chunks: Query<(Entity, &Transform), With<ChunkMarker>>,
     mouse: Res<ButtonInput<MouseButton>>,
 ) {
@@ -178,8 +165,8 @@ fn handle_interactions(
 }
 
 fn camera_movement(
-    mut camera: Single<&mut Transform, (With<PlayerCamera>, Without<Player>)>,
-    mut player: Single<&mut Transform, (With<Player>, Without<PlayerCamera>)>,
+    mut camera: Single<&mut Transform, (With<Camera3d>, Without<Player>)>,
+    mut player: Single<&mut Transform, (With<Player>, Without<Camera3d>)>,
     mut mouse: EventReader<MouseMotion>,
     settings: Res<GameSettings>,
     window: Single<&Window, With<PrimaryWindow>>,
@@ -406,7 +393,6 @@ pub fn camera_bundle(skybox: Handle<Image>, player: Entity, pitch: f32) -> impl 
         Tonemapping::TonyMcMapface,
         ScreenSpaceAmbientOcclusion::default(),
         Transform::from_xyz(0.0, 1.62, -0.05).with_rotation(Quat::from_rotation_x(pitch)), // minecraft way
-        PlayerCamera,
         ChildOf(player),
     )
 }

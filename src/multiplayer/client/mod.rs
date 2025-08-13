@@ -19,7 +19,7 @@ use iyes_perf_ui::prelude::PerfUiAllEntries;
 
 use crate::{
     GameInfo,
-    player::{OnlinePlayer, PlayerCamera, camera_bundle, player_bundle},
+    player::{OnlinePlayer, camera_bundle, player_bundle},
     render_pipeline::PostProcessSettings,
     ui::{GameState, MenuState, coords_bundle, hotbar_block, hotbar_bundle, root_ui_bundle},
     utils::{get_noise_functions, set_cursor_grab},
@@ -36,12 +36,40 @@ impl Plugin for MultiplayerPlugin {
         app.add_plugins((RenetClientPlugin, NetcodeClientPlugin))
             .add_event::<ClientEvent>()
             .add_systems(OnEnter(GameState::MultiPlayer), setup)
+            .add_systems(OnExit(GameState::MultiPlayer), cleanup)
             .add_systems(
                 Update,
                 (client_event_handler, send_client_data, receive_server_data)
                     .run_if(in_state(GameState::MultiPlayer)),
             );
     }
+}
+
+fn cleanup(
+    mut commands: Commands,
+    mut game_info: ResMut<GameInfo>,
+    transport: Option<ResMut<NetcodeClientTransport>>,
+    camera: Single<Entity, With<Camera3d>>,
+) {
+    if let Some(mut transport) = transport {
+        transport.disconnect();
+    }
+    game_info.server_addr = None;
+    game_info.player_name = "Player".to_string();
+    game_info.chunks = default();
+    game_info.saved_chunks = default();
+    game_info.loading_chunks = default();
+    // idfk it doesnt properly work without doing this
+    commands.entity(*camera).remove::<(
+        TemporalAntiAliasing,
+        PostProcessSettings,
+        Skybox,
+        Bloom,
+        ScreenSpaceAmbientOcclusion,
+        ChildOf,
+    )>();
+    commands.remove_resource::<RenetClient>();
+    commands.remove_resource::<NetcodeClientTransport>();
 }
 
 fn setup(mut commands: Commands, multiplayer_input: Res<GameInfo>) {
@@ -55,8 +83,6 @@ fn setup(mut commands: Commands, multiplayer_input: Res<GameInfo>) {
     //     .unwrap_or(format!("Player {}", rand::random_range(0..1000)));
     let bytes = multiplayer_input.player_name.as_bytes();
     user_data[..bytes.len()].copy_from_slice(bytes);
-    commands.remove_resource::<RenetClient>();
-    commands.remove_resource::<NetcodeClientTransport>();
     commands.insert_resource(RenetClient::new(ConnectionConfig::default()));
 
     let version = env!("CARGO_PKG_VERSION").split(".").collect::<Vec<_>>();
@@ -99,21 +125,6 @@ fn client_event_handler(
         match event {
             ClientEvent::Disconnected(_reason) => {
                 info!("Disconnected from the server");
-                game_info.server_addr = None;
-                game_info.player_name = "Player".to_string();
-                game_info.chunks = default();
-                game_info.saved_chunks = default();
-                game_info.loading_chunks = default();
-                // idfk it doesnt properly work without doing this
-                commands.entity(camera.0).remove::<(
-                    TemporalAntiAliasing,
-                    PostProcessSettings,
-                    Skybox,
-                    Bloom,
-                    ScreenSpaceAmbientOcclusion,
-                    PlayerCamera,
-                    ChildOf,
-                )>();
                 game_state.set(GameState::Menu);
                 menu_state.set(MenuState::MultiPlayer);
             }
@@ -122,9 +133,6 @@ fn client_event_handler(
 
                 game_info.noises = get_noise_functions(seed);
                 game_info.current_block = BlockKind::Stone;
-                game_info.chunks = default();
-                game_info.saved_chunks = default();
-                game_info.loading_chunks = default();
 
                 set_cursor_grab(&mut window, true);
 
