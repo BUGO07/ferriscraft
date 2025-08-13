@@ -49,7 +49,7 @@ pub fn place_block(
             })
             .or_insert(SavedChunk {
                 blocks: HashMap::from([(pos, block)]),
-                entities: chunk.entities.clone(),
+                // entities: chunk.entities.clone(),
             });
     }
     if let Some((commands, chunks)) = update {

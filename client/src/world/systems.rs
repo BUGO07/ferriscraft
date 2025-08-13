@@ -10,7 +10,7 @@ use bevy::{
 };
 use bevy_persistent::Persistent;
 use bevy_renet::renet::RenetClient;
-use ferriscraft::{ClientPacket, GameEntity, GameEntityKind, SEA_LEVEL, SavedChunk, SavedWorld};
+use ferriscraft::{ClientPacket, GameEntity, GameEntityKind, SEA_LEVEL, SavedWorld};
 use rayon::slice::ParallelSliceMut;
 
 use crate::{
@@ -220,7 +220,7 @@ pub fn handle_chunk_gen(
                     for (&pos, &block) in &saved_chunk.blocks {
                         chunk.blocks[vec3_to_index(pos)] = block;
                     }
-                    chunk.entities = saved_chunk.entities.clone();
+                    // chunk.entities = saved_chunk.entities.clone();
                 }
                 chunk
             });
@@ -321,10 +321,10 @@ pub fn process_tasks(
     tasks.par_sort_by_cached_key(|(_, x)| x.1.distance_squared(pt));
 
     let mut chunks = game_info.chunks.write().unwrap();
-    let mut saved_chunks = game_info
-        .saved_chunks
-        .as_ref()
-        .map(|saved_chunks| saved_chunks.write().unwrap());
+    // let mut saved_chunks = game_info
+    //     .saved_chunks
+    //     .as_ref()
+    //     .map(|saved_chunks| saved_chunks.write().unwrap());
     let mut loading_chunks = game_info.loading_chunks.write().unwrap();
 
     let mut processed_this_frame = 0;
@@ -333,19 +333,19 @@ pub fn process_tasks(
             break;
         }
         if let Some(mut chunk) = future::block_on(future::poll_once(&mut compute_task.0)) {
-            if let Some(saved_chunks) = &mut saved_chunks {
-                saved_chunks
-                    .entry(chunk.pos)
-                    .and_modify(|c| {
-                        if c.entities != chunk.entities {
-                            c.entities = chunk.entities.clone();
-                        }
-                    })
-                    .or_insert(SavedChunk {
-                        entities: chunk.entities.clone(),
-                        ..default()
-                    });
-            }
+            // if let Some(saved_chunks) = &mut saved_chunks {
+            //     saved_chunks
+            //         .entry(chunk.pos)
+            //         .and_modify(|c| {
+            //             if c.entities != chunk.entities {
+            //                 c.entities = chunk.entities.clone();
+            //             }
+            //         })
+            //         .or_insert(SavedChunk {
+            //             entities: chunk.entities.clone(),
+            //             ..default()
+            //         });
+            // }
 
             for (e, game_entity) in &mut chunk.entities {
                 *e = commands

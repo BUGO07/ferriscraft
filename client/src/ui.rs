@@ -85,8 +85,8 @@ impl Plugin for UIPlugin {
         .add_systems(OnEnter(MenuState::SinglePlayer), singleplayer_menu)
         .add_systems(OnEnter(MenuState::SinglePlayerNewWorld), sp_new_world_menu)
         .add_systems(OnEnter(MenuState::MultiPlayer), multiplayer_menu)
-        .add_systems(OnEnter(GameState::Menu), ungrab_cursor)
-        .add_systems(OnExit(GameState::Menu), grab_cursor)
+        .add_systems(OnEnter(GameState::Menu), enter_menu)
+        .add_systems(OnExit(GameState::Menu), exit_menu)
         .add_systems(Update, (handle_errors, handle_buttons, handle_textboxes))
         .add_systems(Update, handle_hud.run_if(not(in_state(GameState::Menu))))
         .add_systems(Update, pause_menu.run_if(not(in_state(GameState::Menu)))
@@ -105,11 +105,18 @@ impl Plugin for UIPlugin {
     }
 }
 
-fn ungrab_cursor(mut window: Single<&mut Window, With<PrimaryWindow>>) {
+fn enter_menu(
+    mut commands: Commands,
+    mut window: Single<&mut Window, With<PrimaryWindow>>,
+    pause_menu_query: Query<Entity, With<PuaseMenu>>,
+) {
     set_cursor_grab(&mut window, false);
+    for pause_menu in pause_menu_query.iter() {
+        commands.entity(pause_menu).despawn();
+    }
 }
 
-fn grab_cursor(mut window: Single<&mut Window, With<PrimaryWindow>>) {
+fn exit_menu(mut window: Single<&mut Window, With<PrimaryWindow>>) {
     set_cursor_grab(&mut window, true);
 }
 

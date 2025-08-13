@@ -46,14 +46,14 @@
 
 ## Building And Running
 
-Make sure you have the latest version of nightly [rust](https://rustup.rs/).
+Make sure you have the latest version of [rust](https://rustup.rs/).
 
 1. Clone the repo with:\
 `git clone --depth=1 https://github.com/BUGO07/ferriscraft`
 
-2. Go to the root directory of the cloned repo and run `cargo run`
+2. Go to the root directory of the cloned repo and run `cargo run -p client`
 
-3. (Optional) `cargo run --bin server` to run the server
+3. (Optional) `cargo run -p server` to run the server
 
 ## Credits
 
