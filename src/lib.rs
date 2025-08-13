@@ -10,9 +10,14 @@ use std::{
     hash::{DefaultHasher, Hasher},
 };
 
-use bevy::prelude::*;
-use bevy_renet::renet::{DefaultChannel, RenetClient, RenetServer};
+use bevy_math::{IVec3, Vec2, Vec3, vec2, vec3};
+use renet::{DefaultChannel, RenetServer};
 use serde::{Deserialize, Serialize};
+
+#[cfg(feature = "client")]
+use bevy_ecs::prelude::*;
+#[cfg(feature = "client")]
+use renet::RenetClient;
 
 pub const DEFAULT_SERVER_PORT: u16 = 42069;
 
@@ -28,6 +33,7 @@ pub enum ClientPacket {
     Move(Vec3),
 }
 
+#[cfg(feature = "client")]
 impl ClientPacket {
     fn channel(&self) -> DefaultChannel {
         match self {
@@ -89,11 +95,12 @@ pub fn hash(value: impl std::hash::Hash) -> u64 {
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct SavedChunk {
-    pub entities: Vec<(Entity, GameEntity)>,
+    // pub entities: Vec<(Entity, GameEntity)>,
     pub blocks: HashMap<IVec3, Block>, // placed/broken blocks
 }
 
-#[derive(Resource, Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "client", derive(Resource))]
 pub struct SavedWorld(
     pub u32,
     // name, (transform, velocity, yaw, pitch)
@@ -101,7 +108,8 @@ pub struct SavedWorld(
     pub HashMap<IVec3, SavedChunk>,
 );
 
-#[derive(Component, Clone, Copy, Serialize, Deserialize, PartialEq, Debug)]
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Debug)]
+#[cfg_attr(feature = "client", derive(Component))]
 pub struct GameEntity {
     pub kind: GameEntityKind,
     pub pos: Vec3,
@@ -129,7 +137,8 @@ pub enum GameEntityKind {
     Ferris,
 }
 
-#[derive(Component, Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "client", derive(Component))]
 pub struct Block {
     pub kind: BlockKind,
     pub direction: Direction,

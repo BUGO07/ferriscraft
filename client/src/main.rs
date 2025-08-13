@@ -35,7 +35,7 @@ use ferriscraft::{
 };
 
 use crate::{
-    multiplayer::client::MultiplayerPlugin,
+    multiplayer::MultiplayerPlugin,
     player::{Player, PlayerPlugin},
     render_pipeline::{PostProcessSettings, RenderPipelinePlugin},
     singleplayer::SinglePlayerPlugin,
@@ -105,10 +105,10 @@ fn main() {
         .insert_resource(GameSettings {
             render_distance: 16,
             movement_speed: 4.32,
-            jump_force: 8.0,
+            jump_force: 7.7,
             sensitivity: 1.2,
             fov: 60,
-            gravity: -32.0,
+            gravity: -23.31,
             autosave: true,
             despawn_chunks: true,
             #[cfg(debug_assertions)]
