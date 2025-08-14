@@ -23,8 +23,8 @@
 ## Controls
 
 `WASD/Space` - movement\
-`LControl` - sprint
-`LShift` - sneak
+`LControl` - sprint\
+`LShift` - sneak\
 `LMB/RMB` - place/break blocks\
 `1-9/ScrollWheel+-` - switch blocks\
 `C` - zoom\

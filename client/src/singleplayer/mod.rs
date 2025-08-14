@@ -73,11 +73,11 @@ fn setup(
 ) {
     let persistent = if let Some(new_world) = new_world {
         let SPNewWorld(name, seed) = new_world.into_inner();
-        Persistent::<SavedWorld>::new(Path::new("saves").join(format!("{}.ferris", name)),SavedWorld(
-                    *seed,
-                    HashMap::new(),
-                    HashMap::new(),
-                ))
+        Persistent::<SavedWorld>::new(Path::new("saves").join(format!("{}.ferris", name)),SavedWorld {
+                    seed: *seed,
+                    players: HashMap::new(),
+                    chunks: HashMap::new(),
+    })
                 .expect("World save couldn't be read, please make a backup of saves/world.ferris and remove it from the saves folder.")
     } else {
         let SPSavedWorld(name) = saved_world.unwrap().into_inner();
@@ -86,10 +86,14 @@ fn setup(
                 .expect("World save couldn't be read, please make a backup of saves/world.ferris and remove it from the saves folder.")
     };
 
-    let SavedWorld(seed, players, saved_chunks) = &persistent.data;
+    let SavedWorld {
+        seed,
+        players,
+        chunks,
+    } = &persistent.data;
 
     game_info.noises = get_noise_functions(*seed);
-    game_info.saved_chunks = Some(Arc::new(RwLock::new(saved_chunks.clone())));
+    game_info.saved_chunks = Some(Arc::new(RwLock::new(chunks.clone())));
     game_info.current_block = BlockKind::Stone;
     game_info.player_name = "Player".to_string();
 

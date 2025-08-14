@@ -293,8 +293,8 @@ fn receive_server_data(
     if !chunks_to_update.is_empty() {
         update_chunks(
             &mut commands,
-            chunks,
-            chunks_to_update.into_iter().collect::<Vec<_>>(),
+            chunks.iter().collect(),
+            chunks_to_update.into_iter().collect(),
         );
     }
 
@@ -310,19 +310,24 @@ fn receive_server_data(
                 if let Some((_, mut transform, _)) =
                     players.iter_mut().find(|(_, _, player)| player.0 == name)
                 {
-                    transform.translation = pos + Vec3::Y
+                    transform.translation = pos
                 } else {
                     commands
                         .spawn((
-                            Mesh3d(meshes.add(Capsule3d::new(0.35, 1.2))),
-                            MeshMaterial3d(materials.add(Color::srgb(0.7, 0.7, 0.2))),
-                            Transform::from_translation(pos + Vec3::Y),
+                            Transform::from_translation(pos),
                             Name::new("Player ".to_string() + &name),
                             OnlinePlayer(name.clone()),
+                            Visibility::Visible,
+                        ))
+                        .with_child((
+                            Mesh3d(meshes.add(Capsule3d::new(0.35, 1.1))), // 2 x 0.35 + 1.1 = 1.8m height
+                            MeshMaterial3d(materials.add(Color::srgb(0.7, 0.7, 0.2))),
+                            Transform::from_translation(Vec3::Y * 0.9), // 1.8/2.0
                         ))
                         .with_child((
                             BillboardText::new(name),
-                            Transform::from_xyz(0.0, 1.5, 0.0).with_scale(Vec3::splat(0.0125)),
+                            Transform::from_translation(Vec3::Y * 2.25)
+                                .with_scale(Vec3::splat(0.0125)),
                         ));
                 }
             }

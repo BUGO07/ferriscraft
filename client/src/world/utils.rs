@@ -16,7 +16,7 @@ use crate::{
 
 pub fn update_chunks(
     commands: &mut Commands,
-    chunks: Query<(Entity, &Transform), With<ChunkMarker>>,
+    chunks: Vec<(Entity, &Transform)>,
     positions: Vec<IVec3>,
 ) {
     for (entity, transform) in chunks {
@@ -35,10 +35,7 @@ pub fn place_block(
     block: Block,
     saved_chunks: &mut Option<&mut HashMap<IVec3, SavedChunk>>,
     client: Option<ResMut<RenetClient>>,
-    update: Option<(
-        &mut Commands,
-        Query<(Entity, &Transform), With<ChunkMarker>>,
-    )>,
+    update: Option<(&mut Commands, Vec<(Entity, &Transform)>)>,
 ) {
     chunk.blocks[vec3_to_index(pos)] = block;
     if let Some(saved_chunks) = saved_chunks {
