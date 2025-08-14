@@ -78,19 +78,19 @@ pub fn save_game(
         && let Some(game_info) = game_info
     {
         persistent_world
-            .update(|sc| {
+            .update(|saved_world| {
                 if let Ok(player) = player.single()
                     && let Some(camera) = camera
                 {
                     let (_, pitch, _) = camera.rotation.to_euler(EulerRot::YXZ);
                     let (yaw, _, _) = player.0.rotation.to_euler(EulerRot::YXZ);
-                    sc.1.insert(
+                    saved_world.players.insert(
                         game_info.player_name.clone(),
                         (player.0.translation, player.1.velocity, yaw, pitch),
                     );
                 }
                 if let Some(saved_chunks) = &game_info.saved_chunks {
-                    sc.2 = saved_chunks.read().unwrap().clone();
+                    saved_world.chunks = saved_chunks.read().unwrap().clone();
                 }
             })
             .unwrap();

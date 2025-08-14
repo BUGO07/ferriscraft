@@ -1,4 +1,7 @@
-use std::collections::VecDeque;
+use std::{
+    collections::VecDeque,
+    net::{IpAddr, Ipv4Addr, UdpSocket},
+};
 
 #[macro_export]
 macro_rules! log {
@@ -12,4 +15,30 @@ pub fn _log(logs: &mut VecDeque<String>, args: std::fmt::Arguments) {
         logs.pop_front();
     }
     logs.push_back(s);
+}
+
+pub fn local_ipv4() -> Option<Ipv4Addr> {
+    let sock = UdpSocket::bind(("0.0.0.0", 0)).ok()?;
+    sock.connect(("8.8.8.8", 80)).ok()?; // doesn't send any packets
+    let addr = sock.local_addr().ok()?.ip().to_canonical();
+    match addr {
+        IpAddr::V4(ip) => {
+            if is_private_v4(ip) {
+                Some(ip)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+pub fn is_private_v4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    match octets {
+        [10, _, _, _] => true,
+        [172, b, _, _] if (16..=31).contains(&b) => true,
+        [192, 168, _, _] => true,
+        _ => false,
+    }
 }

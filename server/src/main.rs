@@ -16,7 +16,7 @@ use eframe::egui;
 use renet::{ConnectionConfig, RenetServer};
 use renet_netcode::{NetcodeServerTransport, ServerAuthentication, ServerConfig};
 
-use ferriscraft::{DEFAULT_SERVER_PORT, Persistent, SavedWorld};
+use ferriscraft::{DEFAULT_SERVER_PORT, Persistent, SavedWorld, ServerPacket};
 
 use crate::events::handle_events;
 
@@ -57,7 +57,7 @@ fn main() {
 impl Default for ServerApp {
     fn default() -> Self {
         Self {
-            private_ip: "127.0.0.1".to_string(),
+            private_ip: utils::local_ipv4().unwrap_or(Ipv4Addr::new(127, 0, 0, 1)).to_string(),
             public_ip: "".to_string(),
             port: DEFAULT_SERVER_PORT.to_string(),
             max_players: 64.to_string(),
@@ -65,11 +65,11 @@ impl Default for ServerApp {
             transport: None,
             server: None,
             players: HashMap::new(),
-            persistent_world: Persistent::<SavedWorld>::new(PathBuf::from("saves").join("world.ferris"), SavedWorld(
-                    rand::random(),
-                    HashMap::new(),
-                    HashMap::new(),
-                ))
+            persistent_world: Persistent::<SavedWorld>::new(PathBuf::from("saves").join("world.ferris"), SavedWorld {
+                    seed: rand::random(),
+                    players: HashMap::new(),
+                    chunks: HashMap::new(),
+        })
                 .expect("World save couldn't be read, please make a backup of saves/world.ferris and remove it from the saves folder."),
             last_autosave: Instant::now(),
             last_tick: Instant::now(),
@@ -332,19 +332,15 @@ impl eframe::App for ServerApp {
                                 *error_message = "Invalid private IP".to_string();
                                 return;
                             };
-                            let ips = vec![SocketAddr::V4(SocketAddrV4::new(
-                                if !public_ip.is_empty() {
-                                    if let Ok(public_ip) = public_ip.parse::<Ipv4Addr>() {
-                                        public_ip
-                                    } else {
-                                        *error_message = "Invalid public IP".to_string();
-                                        return;
-                                    }
+                            let mut ips = vec![SocketAddr::V4(SocketAddrV4::new(private_ip, port))];
+                            if !public_ip.is_empty() {
+                                if let Ok(public_ip) = public_ip.parse::<Ipv4Addr>() {
+                                    ips.push(SocketAddr::V4(SocketAddrV4::new(public_ip, port)));
                                 } else {
-                                    private_ip
-                                },
-                                port,
-                            ))];
+                                    *error_message = "Invalid public IP".to_string();
+                                    return;
+                                }
+                            }
                             let Ok(max_clients) = max_players.parse::<usize>() else {
                                 *error_message = "Invalid max players".to_string();
                                 return;
@@ -353,6 +349,12 @@ impl eframe::App for ServerApp {
                                 *error_message = "Max players too high".to_string();
                                 return;
                             }
+                            let Ok(current_time) =
+                                SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
+                            else {
+                                *error_message = "System clock is wrong".to_string();
+                                return;
+                            };
 
                             *error_message = "".to_string();
 
@@ -377,9 +379,7 @@ impl eframe::App for ServerApp {
                             log!(logs, "Protocol ID - {protocol_id}");
 
                             let server_config = ServerConfig {
-                                current_time: SystemTime::now()
-                                    .duration_since(SystemTime::UNIX_EPOCH)
-                                    .expect("system clock is wrong"),
+                                current_time,
                                 max_clients,
                                 protocol_id,
                                 public_addresses: ips,
@@ -430,14 +430,15 @@ impl eframe::App for ServerApp {
                     if server.is_some() && transport.is_some() {
                         let message = user_chat_input.trim();
                         if !message.is_empty() {
-                            if !message.starts_with("/") {
-                                log!(logs, "[Server] {}", message);
-                            } else {
-                                match message {
-                                    "/save" => {
+                            let mut parts = message.split_whitespace();
+                            let command = parts.next();
+                            let args = parts.map(|s| s.to_string()).collect::<Vec<_>>();
+                            if let Some(cmd) = command {
+                                match cmd {
+                                    "save" => {
                                         save_game(persistent_world, players, logs);
                                     }
-                                    "/stop" => {
+                                    "stop" => {
                                         stop_server(
                                             server,
                                             transport,
@@ -446,10 +447,22 @@ impl eframe::App for ServerApp {
                                             logs,
                                         );
                                     }
+                                    "say" => {
+                                        if !args.is_empty() {
+                                            let msg = args.join(" ");
+                                            log!(logs, "[Server] {}", msg);
+                                            ServerPacket::ChatMessage("Server".to_string(), msg)
+                                                .broadcast(server.as_mut().unwrap());
+                                        } else {
+                                            log!(logs, "Usage: /say <message>");
+                                        }
+                                    }
                                     _ => {
                                         log!(logs, "Unknown command: {}", message);
                                     }
                                 }
+                            } else {
+                                log!(logs, "Unknown command: {}", message);
                             }
                             user_chat_input.clear();
                         }
@@ -468,9 +481,11 @@ pub fn save_game(
 ) {
     log!(logs, "Saving...");
     // chunks are updated in Persistent<SavedWorld>
-    if let Err(error) = persistent_world.update(|SavedWorld(_, saved_players, _)| {
+    if let Err(error) = persistent_world.update(|saved_world| {
         for (_player_id, (name, pos)) in players.iter() {
-            saved_players.insert(name.clone(), (*pos, Vec3::ZERO, 0.0, 0.0));
+            saved_world
+                .players
+                .insert(name.clone(), (*pos, Vec3::ZERO, 0.0, 0.0));
         }
     }) {
         log!(logs, "Failed to save game - {error}");

@@ -70,7 +70,8 @@ fn handle_interactions(
     game_info: Res<GameInfo>,
     player: Single<&Transform, With<Player>>,
     camera: Single<&GlobalTransform, With<Camera3d>>,
-    chunks: Query<(Entity, &Transform), With<ChunkMarker>>,
+    chunks: Query<(Entity, &Transform), (With<ChunkMarker>, Without<OnlinePlayer>)>,
+    online_players: Query<&Transform, (With<OnlinePlayer>, Without<ChunkMarker>)>,
     mouse: Res<ButtonInput<MouseButton>>,
 ) {
     if let Some(hit) = ray_cast(
@@ -101,7 +102,7 @@ fn handle_interactions(
                     Block::AIR,
                     &mut saved_chunks,
                     client,
-                    Some((&mut commands, chunks)),
+                    Some((&mut commands, chunks.iter().collect())),
                 );
             }
         } else if mouse.just_pressed(MouseButton::Right) {
@@ -128,9 +129,20 @@ fn handle_interactions(
                     player.translation,
                     vec3(0.25, 1.8, 0.25),
                     hit_global_position.as_vec3() + hit.normal.as_vec3(),
-                    Vec3::ONE,
+                    vec3(1.25, 1.0, 1.25),
                 ) {
                     return;
+                }
+
+                for online_player in online_players.iter() {
+                    if aabb_collision(
+                        online_player.translation,
+                        vec3(0.25, 1.8, 0.25),
+                        hit_global_position.as_vec3() + hit.normal.as_vec3(),
+                        vec3(1.25, 1.0, 1.25),
+                    ) {
+                        return;
+                    }
                 }
 
                 if let Some(chunk) = game_info.chunks.write().unwrap().get_mut(&chunk_pos) {
@@ -153,7 +165,7 @@ fn handle_interactions(
                             },
                             &mut saved_chunks,
                             client,
-                            Some((&mut commands, chunks)),
+                            Some((&mut commands, chunks.iter().collect())),
                         );
                     }
                 } else {

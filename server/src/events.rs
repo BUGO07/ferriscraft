@@ -14,7 +14,11 @@ pub fn handle_events(
     players: &mut HashMap<u64, (String, Vec3)>,
     persistent_world: &mut Persistent<SavedWorld>,
 ) {
-    let SavedWorld(seed, saved_players, saved_chunks) = &mut persistent_world.data;
+    let SavedWorld {
+        seed,
+        players: saved_players,
+        chunks: saved_chunks,
+    } = &mut persistent_world.data;
     while let Some(event) = server.get_event() {
         match event {
             ServerEvent::ClientConnected { client_id } => {
@@ -99,21 +103,14 @@ pub fn handle_events(
                     let player_ids = server
                         .clients_id_iter()
                         .filter(|id| {
-                            players
-                                .get(id)
-                                .unwrap()
-                                .1
-                                .as_ivec3()
-                                .with_y(0)
-                                .distance_squared(pos)
-                                > 64
+                            let player = players.get(id).unwrap().1;
+                            !(!player.is_nan()
+                                && player.is_finite()
+                                && player.as_ivec3().with_y(0).distance_squared(pos) <= 64)
                         })
                         .collect::<Vec<_>>();
 
                     for id in player_ids {
-                        if id == client_id {
-                            continue;
-                        }
                         ServerPacket::ChunkUpdate(
                             chunk_pos,
                             saved_chunks.get(&chunk_pos).unwrap().clone(),
@@ -133,8 +130,7 @@ pub fn handle_events(
                     players.entry(client_id).and_modify(|x| {
                         x.1 = pos;
                     });
-                    ServerPacket::PlayerData(players.values().cloned().collect())
-                        .broadcast_except(server, client_id);
+                    ServerPacket::PlayerData(players.values().cloned().collect()).broadcast(server);
                 }
                 _ => {}
             }

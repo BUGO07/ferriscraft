@@ -96,28 +96,23 @@ pub struct Persistent<R: Serialize + DeserializeOwned> {
 
 impl<R: Serialize + DeserializeOwned> Persistent<R> {
     pub fn new(path: PathBuf, default: R) -> Result<Self, String> {
+        let mut persistent = Self {
+            path: path.clone(),
+            data: default,
+        };
         if !path.exists() {
-            let persistent = Self {
-                path,
-                data: default,
-            };
             persistent.initialize()?;
-            persistent.write(&persistent.data)?;
+            persistent.write()?;
             return Ok(persistent);
         }
 
-        let data = Self::read(&path)?;
-        Ok(Self { path, data })
-    }
-
-    pub fn persist(&self) -> Result<(), String> {
-        self.write(&self.data)?;
-        Ok(())
+        persistent.read()?;
+        Ok(persistent)
     }
 
     pub fn update(&mut self, updater: impl FnOnce(&mut R)) -> Result<(), String> {
         updater(&mut self.data);
-        self.persist()
+        self.write()
     }
 
     fn initialize(&self) -> Result<(), String> {
@@ -127,13 +122,14 @@ impl<R: Serialize + DeserializeOwned> Persistent<R> {
         Ok(())
     }
 
-    fn read(path: &PathBuf) -> Result<R, String> {
-        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-        bincode::deserialize(&bytes).map_err(|e| e.to_string())
+    fn read(&mut self) -> Result<(), String> {
+        let bytes = std::fs::read(&self.path).map_err(|e| e.to_string())?;
+        self.data = bincode::deserialize(&bytes).map_err(|e| e.to_string())?;
+        Ok(())
     }
 
-    fn write(&self, data: &R) -> Result<(), String> {
-        let bytes = bincode::serialize(data).map_err(|e| e.to_string())?;
+    fn write(&self) -> Result<(), String> {
+        let bytes = bincode::serialize(&self.data).map_err(|e| e.to_string())?;
         std::fs::write(&self.path, bytes).map_err(|e| e.to_string())
     }
 }
@@ -165,13 +161,12 @@ pub struct SavedChunk {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "client", derive(Resource))]
-pub struct SavedWorld(
-    pub u32,
+pub struct SavedWorld {
+    pub seed: u32,
     // name, (transform, velocity, yaw, pitch)
-    pub HashMap<String, (Vec3, Vec3, f32, f32)>,
-    pub HashMap<IVec3, SavedChunk>,
-);
+    pub players: HashMap<String, (Vec3, Vec3, f32, f32)>,
+    pub chunks: HashMap<IVec3, SavedChunk>,
+}
 
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Debug)]
 #[cfg_attr(feature = "client", derive(Component))]
