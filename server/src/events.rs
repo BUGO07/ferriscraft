@@ -5,7 +5,7 @@ use ferriscraft::{CHUNK_SIZE, ClientPacket, Persistent, SavedChunk, SavedWorld, 
 use renet::{DefaultChannel, RenetServer, ServerEvent};
 use renet_netcode::NetcodeServerTransport;
 
-use crate::log;
+use crate::{log, utils::get_name};
 
 pub fn handle_events(
     server: &mut RenetServer,
@@ -24,17 +24,30 @@ pub fn handle_events(
             ServerEvent::ClientConnected { client_id } => {
                 log!(
                     logs,
-                    "Client {client_id} connecting with ip {}",
+                    "Client {client_id} connecting with IP {}",
                     transport.client_addr(client_id).unwrap()
                 );
-                let name = String::from_utf8_lossy(&transport.user_data(client_id).unwrap())
-                    .trim_end_matches(0 as char)
-                    .to_string();
-                if players.values().any(|(n, _)| n == &name) {
-                    log!(logs, "{name} tried joining but the name is already taken");
+                let name = if let Some(name) = get_name(client_id, transport) {
+                    if name.len() < 3 || name.len() > 16 {
+                        log!(logs, "Client {client_id} has invalid name");
+                        server.disconnect(client_id);
+                        continue;
+                    }
+                    if players.values().any(|(n, _)| n == &name) {
+                        log!(
+                            logs,
+                            "Client {client_id} tried joining as {name} but the name is already taken"
+                        );
+                        server.disconnect(client_id);
+                        continue;
+                    }
+                    name
+                } else {
+                    log!(logs, "Client {client_id} has invalid name");
                     server.disconnect(client_id);
                     continue;
-                }
+                };
+
                 log!(logs, "{name} joined the server");
                 let pos = saved_players
                     .get(&name)

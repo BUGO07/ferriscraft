@@ -1,5 +1,5 @@
 use std::{
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs},
     path::Path,
 };
 
@@ -13,15 +13,12 @@ use bevy::{
     render::diagnostic::RenderDiagnosticsPlugin,
     window::PrimaryWindow,
 };
-use bevy_inspector_egui::{
-    bevy_egui::EguiPlugin,
-    quick::{ResourceInspectorPlugin, WorldInspectorPlugin},
-};
+use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 use ferriscraft::{BlockKind, DEFAULT_SERVER_PORT};
 use iyes_perf_ui::{PerfUiPlugin, prelude::PerfUiEntryFPS};
 
 use crate::{
-    CHUNK_SIZE, GameInfo, GameSettings,
+    CHUNK_SIZE, GameInfo,
     player::Player,
     singleplayer::{SPNewWorld, SPSavedWorld},
     utils::set_cursor_grab,
@@ -40,28 +37,27 @@ impl Plugin for UIPlugin {
             PerfUiPlugin,
             EguiPlugin::default(),
             WorldInspectorPlugin::default(),
-            ResourceInspectorPlugin::<GameSettings>::default(),
         ))
         .add_observer(
             |trigger: Trigger<Pointer<Released>>,
              mut textboxes: Query<(&mut Text, &mut TextBox, &ChildOf, Entity)>| {
                 for (mut text, mut textbox, child_of, entity) in textboxes.iter_mut() {
                     if trigger.target == child_of.parent() || trigger.target == entity {
-                        if !textbox.0 {
-                            if text.0 == textbox.2 {
+                        if !textbox.selected {
+                            if text.0 == textbox.placeholder {
                                 text.0.clear();
                             }
                             text.0.push('|');
                         }
-                        textbox.0 = true;
+                        textbox.selected = true;
                     } else {
                         if text.0.ends_with("|") {
                             text.0.pop();
                         }
                         if text.0.is_empty() {
-                            text.0 = textbox.2.clone();
+                            text.0 = textbox.placeholder.clone();
                         }
-                        textbox.0 = false;
+                        textbox.selected = false;
                     }
                 }
             },
@@ -90,12 +86,12 @@ impl Plugin for UIPlugin {
         .add_systems(Update, (handle_errors, handle_buttons, handle_textboxes))
         .add_systems(Update, handle_hud.run_if(not(in_state(GameState::Menu))))
         .add_systems(Update, pause_menu.run_if(not(in_state(GameState::Menu)))
-            .run_if(|game_settings: Res<GameSettings>, mut was_paused: Local<bool>| {
-                if !*was_paused && game_settings.paused {
+            .run_if(|game_info: Res<GameInfo>, mut was_paused: Local<bool>| {
+                if !*was_paused && game_info.paused {
                     *was_paused = true;
                     return true;
                 }
-                if *was_paused && !game_settings.paused {
+                if *was_paused && !game_info.paused {
                     *was_paused = false;
                     return true;
                 }
@@ -163,10 +159,10 @@ pub struct PuaseMenu;
 
 fn pause_menu(
     mut commands: Commands,
-    game_settings: ResMut<GameSettings>,
+    game_info: ResMut<GameInfo>,
     pause_menu_query: Query<Entity, With<PuaseMenu>>,
 ) {
-    if game_settings.paused {
+    if game_info.paused {
         let ui = commands
             .spawn(root_ui_bundle())
             .insert(BackgroundColor(Color::BLACK.with_alpha(0.7)))
@@ -179,9 +175,9 @@ fn pause_menu(
             .spawn(button("Back", vertical, 300.0, 60.0))
             .observe(
                 |_trigger: Trigger<Pointer<Released>>,
-                 mut game_settings: ResMut<GameSettings>,
+                 mut game_info: ResMut<GameInfo>,
                  mut window: Single<&mut Window, With<PrimaryWindow>>| {
-                    game_settings.paused = false;
+                    game_info.paused = false;
                     set_cursor_grab(&mut window, true);
                 },
             );
@@ -196,14 +192,14 @@ fn pause_menu(
             .observe(
                 |_trigger: Trigger<Pointer<Released>>,
                  mut commands: Commands,
-                 mut game_settings: ResMut<GameSettings>,
+                 mut game_info: ResMut<GameInfo>,
                  mut game_state: ResMut<NextState<GameState>>,
                  mut menu_state: ResMut<NextState<MenuState>>,
                  pause_menu_query: Query<Entity, With<PuaseMenu>>| {
                     for entity in pause_menu_query.iter() {
                         commands.entity(entity).despawn();
                     }
-                    game_settings.paused = false;
+                    game_info.paused = false;
                     game_state.set(GameState::Menu);
                     menu_state.set(MenuState::Main);
                 },
@@ -331,8 +327,15 @@ fn sp_new_world_menu(mut commands: Commands) {
 
     let vertical = commands.spawn(vertical_ui_bundle(ui)).id();
 
-    commands.spawn(text_box("World Name", vertical, 400.0, 60.0));
-    commands.spawn(text_box("Seed", vertical, 400.0, 60.0));
+    commands.spawn(text_box(
+        "World Name",
+        None,
+        "e.g. my_lovely_world",
+        vertical,
+        400.0,
+        60.0,
+    ));
+    commands.spawn(text_box("Seed", None, "e.g. 69420", vertical, 400.0, 60.0));
 
     commands.spawn((
         ErrorText,
@@ -360,11 +363,11 @@ fn sp_new_world_menu(mut commands: Commands) {
                 let mut name = String::new();
                 let mut seed = String::new();
                 for t in textbox.iter() {
-                    if t.2 == "World Name" {
-                        name = t.1.clone();
+                    if t.name == "World Name" {
+                        name = t.current_value.clone();
                     }
-                    if t.2 == "Seed" {
-                        seed = t.1.clone();
+                    if t.name == "Seed" {
+                        seed = t.current_value.clone();
                     }
                 }
 
@@ -373,11 +376,12 @@ fn sp_new_world_menu(mut commands: Commands) {
                     return;
                 }
 
-                for i in ["/", "\\", ":", "?", "\"", "<", ">", "|"] {
-                    if name.contains(i) {
-                        game_info.ui_err = Some("Name contains illegal characters".into());
-                        return;
-                    }
+                if !name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                {
+                    game_info.ui_err = Some("Name contains illegal characters".into());
+                    return;
                 }
 
                 if name.len() > 20 {
@@ -413,7 +417,7 @@ fn sp_new_world_menu(mut commands: Commands) {
         );
 }
 
-fn multiplayer_menu(mut commands: Commands) {
+fn multiplayer_menu(mut commands: Commands, game_info: Res<GameInfo>) {
     let ui = commands
         .spawn(root_ui_bundle())
         .insert(StateScoped(MenuState::MultiPlayer))
@@ -433,8 +437,22 @@ fn multiplayer_menu(mut commands: Commands) {
         ChildOf(vertical),
     ));
 
-    commands.spawn(text_box("Player Name", vertical, 400.0, 60.0));
-    commands.spawn(text_box("Server IP", vertical, 400.0, 60.0));
+    commands.spawn(text_box(
+        "Player Name",
+        Some(game_info.settings.player_name.clone()),
+        "e.g. meatball420",
+        vertical,
+        400.0,
+        60.0,
+    ));
+    commands.spawn(text_box(
+        "Server Address",
+        Some(game_info.settings.server_addr.clone()),
+        "e.g. ferriscraft.com",
+        vertical,
+        400.0,
+        60.0,
+    ));
 
     let horizontal = commands.spawn(horizontal_ui_bundle(vertical)).id();
 
@@ -445,45 +463,68 @@ fn multiplayer_menu(mut commands: Commands) {
              mut game_info: ResMut<GameInfo>,
              mut menu_state: ResMut<NextState<MenuState>>,
              mut game_state: ResMut<NextState<GameState>>,
-             mut error_text: Single<&mut Text, With<ErrorText>>,
              textbox: Query<&mut TextBox>| {
                 let mut name = String::new();
-                let mut ip = String::new();
+                let mut address = String::new();
                 for t in textbox.iter() {
-                    if t.2 == "Player Name" {
-                        name = t.1.clone();
+                    if t.name == "Player Name" {
+                        name = t.current_value.clone();
                     }
-                    if t.2 == "Server IP" {
-                        ip = t.1.clone();
+                    if t.name == "Server Address" {
+                        address = t.current_value.clone();
                     }
                 }
                 if name.is_empty() {
-                    error_text.0 = "Player name cannot be empty".into();
+                    game_info.ui_err = Some("Player name cannot be empty".into());
+                    return;
+                }
+                if name.len() < 3 {
+                    game_info.ui_err =
+                        Some("Player name cannot be shorter than 3 characters".into());
                     return;
                 }
                 if name.len() > 16 {
-                    error_text.0 = "Player name cannot be longer than 16 characters".into();
+                    game_info.ui_err =
+                        Some("Player name cannot be longer than 16 characters".into());
                     return;
                 }
-                if ip.is_empty() {
-                    error_text.0 = "IP address cannot be empty".into();
+                if !name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                {
+                    game_info.ui_err = Some("Name contains illegal characters".into());
                     return;
                 }
-                if let Ok(addr) = ip.parse::<SocketAddr>() {
+                if address.is_empty() {
+                    game_info.ui_err = Some("Server address cannot be empty".into());
+                    return;
+                }
+                let addr = address
+                    .parse::<SocketAddrV4>()
+                    .map(SocketAddr::V4)
+                    .ok()
+                    .or(address
+                        .parse::<Ipv4Addr>()
+                        .ok()
+                        .map(|ip| SocketAddr::V4(SocketAddrV4::new(ip, DEFAULT_SERVER_PORT))))
+                    .or((if address.contains(':') {
+                        address.to_string()
+                    } else {
+                        format!("{}:{}", address, DEFAULT_SERVER_PORT)
+                    })
+                    .to_socket_addrs()
+                    .ok()
+                    .and_then(|mut x| x.find(|x| x.is_ipv4())));
+                if let Some(addr) = addr {
                     println!("Connecting to {}", addr);
-                    game_info.player_name = name;
-                    game_info.server_addr = Some(addr);
-                    menu_state.set(MenuState::None);
-                    game_state.set(GameState::MultiPlayer);
-                } else if let Ok(addr) = ip.parse::<Ipv4Addr>() {
-                    println!("Connecting to {}:{}", addr, DEFAULT_SERVER_PORT);
-                    game_info.player_name = name;
-                    game_info.server_addr =
-                        Some(SocketAddr::V4(SocketAddrV4::new(addr, DEFAULT_SERVER_PORT)));
+                    game_info.settings.player_name = name;
+                    game_info.settings.server_addr = address;
+                    game_info.connection_addr = Some(addr);
+                    game_info.settings.write().ok();
                     menu_state.set(MenuState::None);
                     game_state.set(GameState::MultiPlayer);
                 } else {
-                    error_text.0 = "Invalid IP address".into();
+                    game_info.ui_err = Some("Invalid address".into());
                 }
             },
         );
@@ -530,20 +571,20 @@ fn handle_textboxes(
     mut query: Query<(&mut Text, &mut TextBox)>,
 ) {
     for (mut text, mut textbox) in query.iter_mut() {
-        if textbox.0 {
+        if textbox.selected {
             for ev in key_evr.read() {
                 if ev.state == ButtonState::Pressed {
                     if ev.key_code == KeyCode::Backspace {
-                        textbox.1.pop();
+                        textbox.current_value.pop();
                     } else if let Some(t) = &ev.text {
                         for ch in t.chars() {
-                            textbox.1.push(ch);
+                            textbox.current_value.push(ch);
                         }
                     }
                 }
             }
-            text.0 = textbox.1.clone();
-            if textbox.0 {
+            text.0 = textbox.current_value.clone();
+            if textbox.selected {
                 text.0.push('|');
             }
         }
@@ -555,7 +596,6 @@ fn handle_hud(
     mut mouse_scroll: EventReader<MouseWheel>,
     mut game_info: ResMut<GameInfo>,
     mut coords_text: Single<&mut Text, With<CoordsText>>,
-    game_settings: Res<GameSettings>,
     player: Single<&Transform, With<Player>>,
     perf_ui: Query<&mut Visibility, With<PerfUiEntryFPS>>,
 ) {
@@ -612,7 +652,7 @@ fn handle_hud(
         game_info.current_block
     );
 
-    if !game_settings.paused {
+    if !game_info.paused {
         for ev in mouse_scroll.read() {
             let dir = -ev.y.signum();
             let mut next = game_info.current_block as i32 + dir as i32;
@@ -628,7 +668,7 @@ fn handle_hud(
         }
 
         for mut visibility in perf_ui {
-            *visibility = if game_settings.debug_menus {
+            *visibility = if game_info.settings.debug_menus {
                 Visibility::Visible
             } else {
                 Visibility::Hidden
@@ -712,9 +752,22 @@ pub fn button(text: &str, parent: Entity, size_x: f32, size_y: f32) -> impl Bund
 }
 
 #[derive(Component)]
-pub struct TextBox(pub bool, pub String, pub String);
+pub struct TextBox {
+    pub selected: bool,
+    pub current_value: String,
+    pub placeholder: String,
+    pub name: String,
+}
 
-pub fn text_box(text: &str, parent: Entity, size_x: f32, size_y: f32) -> impl Bundle {
+pub fn text_box(
+    name: &str,
+    default_value: Option<String>,
+    placeholder: &str,
+    parent: Entity,
+    size_x: f32,
+    size_y: f32,
+) -> impl Bundle {
+    let text = default_value.clone().unwrap_or(placeholder.to_string());
     (
         Button,
         Node {
@@ -723,22 +776,49 @@ pub fn text_box(text: &str, parent: Entity, size_x: f32, size_y: f32) -> impl Bu
             border: UiRect::all(Val::Px(5.0)),
             justify_content: JustifyContent::Center,
             align_items: AlignItems::Center,
+            margin: UiRect::top(Val::Px(20.0)),
             ..default()
         },
         BorderColor(Color::BLACK),
         BorderRadius::MAX,
         BackgroundColor(NORMAL_BUTTON),
-        children![(
-            TextBox(false, String::new(), text.into()),
-            Text::new(text),
-            TextFont {
-                // font: asset_server.load("fonts/FiraSans-Bold.ttf"),
-                font_size: 26.0,
-                ..default()
-            },
-            TextColor(Color::srgb(0.9, 0.9, 0.9)),
-            TextShadow::default(),
-        )],
+        children![
+            (
+                Node {
+                    position_type: PositionType::Absolute,
+                    top: Val::Px(-35.0),
+                    ..default()
+                },
+                Text::new(name),
+                TextFont {
+                    // font: asset_server.load("fonts/FiraSans-Bold.ttf"),
+                    font_size: 22.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.9, 0.9, 0.9)),
+                TextShadow::default(),
+            ),
+            (
+                Node {
+                    position_type: PositionType::Absolute,
+                    ..default()
+                },
+                TextBox {
+                    selected: false,
+                    current_value: default_value.unwrap_or_default(),
+                    placeholder: placeholder.to_string(),
+                    name: name.to_string()
+                },
+                Text::new(if text.is_empty() { placeholder } else { &text }),
+                TextFont {
+                    // font: asset_server.load("fonts/FiraSans-Bold.ttf"),
+                    font_size: 26.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.9, 0.9, 0.9)),
+                TextShadow::default(),
+            )
+        ],
         ChildOf(parent),
     )
 }

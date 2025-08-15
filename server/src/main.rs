@@ -6,7 +6,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket},
+    net::{Ipv4Addr, ToSocketAddrs, UdpSocket},
     path::PathBuf,
     time::{Duration, Instant, SystemTime},
 };
@@ -17,17 +17,26 @@ use renet::{ConnectionConfig, RenetServer};
 use renet_netcode::{NetcodeServerTransport, ServerAuthentication, ServerConfig};
 
 use ferriscraft::{DEFAULT_SERVER_PORT, Persistent, SavedWorld, ServerPacket};
+use serde::{Deserialize, Serialize};
 
-use crate::events::handle_events;
+use crate::{
+    events::handle_events,
+    utils::{get_name, local_ip},
+};
 
 mod events;
 mod utils;
 
-struct ServerApp {
-    pub private_ip: String,
-    pub public_ip: String,
+#[derive(Serialize, Deserialize)]
+pub struct Config {
+    pub private_address: String,
+    pub public_address: String,
     pub port: String,
     pub max_players: String,
+}
+
+struct ServerApp {
+    pub config: Persistent<Config>,
     pub error_message: String,
     pub transport: Option<NetcodeServerTransport>,
     pub server: Option<RenetServer>,
@@ -57,20 +66,31 @@ fn main() {
 impl Default for ServerApp {
     fn default() -> Self {
         Self {
-            private_ip: utils::local_ipv4().unwrap_or(Ipv4Addr::new(127, 0, 0, 1)).to_string(),
-            public_ip: "".to_string(),
-            port: DEFAULT_SERVER_PORT.to_string(),
-            max_players: 64.to_string(),
+            config: Persistent::<Config>::new(
+                PathBuf::from("config.toml"),
+                Config {
+                    private_address: local_ip()
+                        .unwrap_or(Ipv4Addr::new(127, 0, 0, 1))
+                        .to_string(),
+                    public_address: "".to_string(),
+                    port: DEFAULT_SERVER_PORT.to_string(),
+                    max_players: 64.to_string(),
+                },
+                true,
+            ),
             error_message: "".to_string(),
             transport: None,
             server: None,
             players: HashMap::new(),
-            persistent_world: Persistent::<SavedWorld>::new(PathBuf::from("saves").join("world.ferris"), SavedWorld {
+            persistent_world: Persistent::<SavedWorld>::new(
+                PathBuf::from("saves").join("world.ferris"),
+                SavedWorld {
                     seed: rand::random(),
                     players: HashMap::new(),
                     chunks: HashMap::new(),
-        })
-                .expect("World save couldn't be read, please make a backup of saves/world.ferris and remove it from the saves folder."),
+                },
+                false,
+            ),
             last_autosave: Instant::now(),
             last_tick: Instant::now(),
             accumulator: Duration::ZERO,
@@ -133,6 +153,7 @@ impl eframe::App for ServerApp {
             &mut self.persistent_world,
             &mut self.logs,
         );
+        self.config.write().ok();
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -149,10 +170,7 @@ impl eframe::App for ServerApp {
         }
 
         let ServerApp {
-            private_ip,
-            public_ip,
-            port,
-            max_players,
+            config,
             error_message,
             transport,
             server,
@@ -209,10 +227,7 @@ impl eframe::App for ServerApp {
 
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         for client_id in server.clients_id() {
-                            let username =
-                                String::from_utf8_lossy(&transport.user_data(client_id).unwrap())
-                                    .trim_end_matches(0 as char)
-                                    .to_string();
+                            let username = get_name(client_id, transport).unwrap();
                             let rtt = server.rtt(client_id);
                             let addr = transport.client_addr(client_id).unwrap();
 
@@ -255,34 +270,37 @@ impl eframe::App for ServerApp {
                         ui.heading("Server Settings");
                         ui.add_space(10.0);
 
-                        ui.label("Private IP:");
-                        ui.add_sized(
-                            [200.0, 28.0],
-                            egui::TextEdit::singleline(private_ip)
-                                .horizontal_align(egui::Align::Center),
-                        );
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            ui.label("Private Address:");
+                            ui.add_sized(
+                                [200.0, 28.0],
+                                egui::TextEdit::singleline(&mut config.private_address)
+                                    .horizontal_align(egui::Align::Center),
+                            );
 
-                        ui.label("Public IP:")
-                            .on_hover_text_at_pointer("Leave empty for LAN-only.");
-                        ui.add_sized(
-                            [200.0, 28.0],
-                            egui::TextEdit::singleline(public_ip)
-                                .horizontal_align(egui::Align::Center),
-                        )
-                        .on_hover_text_at_pointer("Leave empty for LAN-only.");
+                            ui.label("Public Address:")
+                                .on_hover_text_at_pointer("Leave empty for LAN-only");
+                            ui.add_sized(
+                                [200.0, 28.0],
+                                egui::TextEdit::singleline(&mut config.public_address)
+                                    .horizontal_align(egui::Align::Center),
+                            )
+                            .on_hover_text_at_pointer("Leave empty for LAN-only");
 
-                        ui.label("Port:");
-                        ui.add_sized(
-                            [200.0, 28.0],
-                            egui::TextEdit::singleline(port).horizontal_align(egui::Align::Center),
-                        );
+                            ui.label("Port:");
+                            ui.add_sized(
+                                [200.0, 28.0],
+                                egui::TextEdit::singleline(&mut config.port)
+                                    .horizontal_align(egui::Align::Center),
+                            );
 
-                        ui.label("Max Players:");
-                        ui.add_sized(
-                            [200.0, 28.0],
-                            egui::TextEdit::singleline(max_players)
-                                .horizontal_align(egui::Align::Center),
-                        );
+                            ui.label("Max Players:");
+                            ui.add_sized(
+                                [200.0, 28.0],
+                                egui::TextEdit::singleline(&mut config.max_players)
+                                    .horizontal_align(egui::Align::Center),
+                            );
+                        });
                     });
                 }
             });
@@ -323,25 +341,37 @@ impl eframe::App for ServerApp {
                         .add_sized([240.0, 40.0], egui::Button::new("Start Server"))
                         .clicked()
                     {
+                        config.write().ok();
+
                         ui.scope(|_| {
-                            let Ok(port) = port.parse::<u16>() else {
+                            let Ok(port) = config.port.parse::<u16>() else {
                                 *error_message = "Invalid port".to_string();
                                 return;
                             };
-                            let Ok(private_ip) = private_ip.parse::<Ipv4Addr>() else {
+                            let Some(private_ip) = format!("{}:{port}", config.private_address)
+                                .to_socket_addrs()
+                                .map(|mut x| x.find(|x| x.is_ipv4()))
+                                .ok()
+                                .flatten()
+                            else {
                                 *error_message = "Invalid private IP".to_string();
                                 return;
                             };
-                            let mut ips = vec![SocketAddr::V4(SocketAddrV4::new(private_ip, port))];
-                            if !public_ip.is_empty() {
-                                if let Ok(public_ip) = public_ip.parse::<Ipv4Addr>() {
-                                    ips.push(SocketAddr::V4(SocketAddrV4::new(public_ip, port)));
+                            let mut ips = vec![private_ip];
+                            if !config.public_address.is_empty() {
+                                if let Some(public_ip) = format!("{}:{port}", config.public_address)
+                                    .to_socket_addrs()
+                                    .map(|mut x| x.find(|x| x.is_ipv4()))
+                                    .ok()
+                                    .flatten()
+                                {
+                                    ips.push(public_ip);
                                 } else {
                                     *error_message = "Invalid public IP".to_string();
                                     return;
                                 }
                             }
-                            let Ok(max_clients) = max_players.parse::<usize>() else {
+                            let Ok(max_clients) = config.max_players.parse::<usize>() else {
                                 *error_message = "Invalid max players".to_string();
                                 return;
                             };

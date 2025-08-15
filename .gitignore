@@ -2,3 +2,5 @@
 /saves
 /assets/atlases
 Cargo.lock
+config.toml
+options.toml

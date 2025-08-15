@@ -1,5 +1,5 @@
 use crate::{
-    CHUNK_HEIGHT, CHUNK_SIZE, GameInfo, GameSettings, PausableSystems,
+    CHUNK_HEIGHT, CHUNK_SIZE, GameInfo, PausableSystems,
     render_pipeline::PostProcessSettings,
     ui::GameState,
     utils::{aabb_collision, ray_cast, vec3_to_index},
@@ -28,8 +28,7 @@ impl Plugin for PlayerPlugin {
         app.add_systems(
             Update,
             (camera_movement, handle_interactions).run_if(
-                not(in_state(GameState::Menu))
-                    .and(|game_settings: Res<GameSettings>| !game_settings.paused),
+                not(in_state(GameState::Menu)).and(|game_info: Res<GameInfo>| !game_info.paused),
             ),
         )
         .add_systems(
@@ -37,13 +36,11 @@ impl Plugin for PlayerPlugin {
             player_movement
                 .run_if(
                     // only run if chunks have been loaded
-                    |game_info: Option<Res<GameInfo>>,
-                     game_settings: Res<GameSettings>,
-                     mut is_loaded: Local<bool>| {
+                    |game_info: Option<Res<GameInfo>>, mut is_loaded: Local<bool>| {
                         if !*is_loaded && let Some(game_info) = game_info {
                             *is_loaded = game_info.chunks.read().unwrap().len()
-                                == ((game_settings.render_distance * 2)
-                                    * (game_settings.render_distance * 2))
+                                == ((game_info.settings.render_distance * 2)
+                                    * (game_info.settings.render_distance * 2))
                                     as usize;
                         }
                         *is_loaded
@@ -180,7 +177,7 @@ fn camera_movement(
     mut camera: Single<&mut Transform, (With<Camera3d>, Without<Player>)>,
     mut player: Single<&mut Transform, (With<Player>, Without<Camera3d>)>,
     mut mouse: EventReader<MouseMotion>,
-    settings: Res<GameSettings>,
+    game_info: Res<GameInfo>,
     window: Single<&Window, With<PrimaryWindow>>,
 ) {
     for ev in mouse.read() {
@@ -189,8 +186,10 @@ fn camera_movement(
 
         if window.cursor_options.grab_mode != CursorGrabMode::None {
             let window_scale = window.height().min(window.width());
-            pitch -= (settings.sensitivity * ev.delta.y * window_scale / 10_000.0).to_radians();
-            yaw -= (settings.sensitivity * ev.delta.x * window_scale / 10_000.0).to_radians();
+            pitch -= (game_info.settings.sensitivity * ev.delta.y * window_scale / 10_000.0)
+                .to_radians();
+            yaw -= (game_info.settings.sensitivity * ev.delta.x * window_scale / 10_000.0)
+                .to_radians();
         }
 
         pitch = pitch.clamp(-1.54, 1.54);
@@ -204,7 +203,6 @@ fn player_movement(
     client: Option<ResMut<RenetClient>>,
     player: Single<(&mut Transform, &mut Player)>,
     keyboard: Res<ButtonInput<KeyCode>>,
-    settings: Res<GameSettings>,
     game_info: Res<GameInfo>,
     time: Res<Time>,
 ) {
@@ -217,7 +215,7 @@ fn player_movement(
 
     let sneaking = keyboard.pressed(KeyCode::ShiftLeft);
 
-    if !settings.paused {
+    if !game_info.paused {
         let local_z = transform.local_z();
         let forward = -Vec3::new(local_z.x, 0.0, local_z.z).normalize_or_zero();
         let right = Vec3::new(local_z.z, 0.0, -local_z.x).normalize_or_zero();
@@ -242,9 +240,9 @@ fn player_movement(
     }
 
     let mut target_velocity = vec3(
-        move_dir.x * settings.movement_speed * sprint_multiplier,
+        move_dir.x * game_info.settings.movement_speed * sprint_multiplier,
         0.0,
-        move_dir.z * settings.movement_speed * sprint_multiplier,
+        move_dir.z * game_info.settings.movement_speed * sprint_multiplier,
     );
 
     if sneaking {
@@ -328,7 +326,7 @@ fn player_movement(
     }
 
     if grounded {
-        if !settings.paused && keyboard.pressed(KeyCode::Space) {
+        if !game_info.paused && keyboard.pressed(KeyCode::Space) {
             let mut head_blocked = false;
             for offset in grounded_offsets {
                 let origin = transform.translation + Vec3::Y * 1.8 + *offset;
@@ -339,9 +337,9 @@ fn player_movement(
             }
 
             player.velocity.y = if head_blocked {
-                settings.jump_force / 4.0
+                game_info.settings.jump_force / 4.0
             } else {
-                settings.jump_force
+                game_info.settings.jump_force
             };
         } else {
             player.velocity.y = 0.0;
@@ -354,7 +352,7 @@ fn player_movement(
             transform.translation.y -= closest_ground_distance - 0.1;
         }
     } else {
-        player.velocity.y += settings.gravity * delta;
+        player.velocity.y += game_info.settings.gravity * delta;
         player.velocity.y = player.velocity.y.max(-78.4);
     }
 

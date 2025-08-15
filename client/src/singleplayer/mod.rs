@@ -44,7 +44,7 @@ fn cleanup(
     player: Query<(&Transform, &Player)>,
     camera: Single<(Entity, &Transform), With<Camera3d>>,
 ) {
-    save_game(persistent_world, player, Some(camera.1), Some(&game_info));
+    save_game(persistent_world, player, Some(camera.1), &game_info);
     commands.remove_resource::<Persistent<SavedWorld>>();
     commands.remove_resource::<SPNewWorld>();
     commands.remove_resource::<SPSavedWorld>();
@@ -73,29 +73,33 @@ fn setup(
 ) {
     let persistent = if let Some(new_world) = new_world {
         let SPNewWorld(name, seed) = new_world.into_inner();
-        Persistent::<SavedWorld>::new(Path::new("saves").join(format!("{}.ferris", name)),SavedWorld {
-                    seed: *seed,
-                    players: HashMap::new(),
-                    chunks: HashMap::new(),
-    })
-                .expect("World save couldn't be read, please make a backup of saves/world.ferris and remove it from the saves folder.")
+        Persistent::<SavedWorld>::new(
+            Path::new("saves").join(format!("{}.ferris", name)),
+            SavedWorld {
+                seed: *seed,
+                players: HashMap::new(),
+                chunks: HashMap::new(),
+            },
+            false,
+        )
     } else {
         let SPSavedWorld(name) = saved_world.unwrap().into_inner();
-        Persistent::<SavedWorld>::new(Path::new("saves").join(format!("{}.ferris", name))
-                ,SavedWorld::default())
-                .expect("World save couldn't be read, please make a backup of saves/world.ferris and remove it from the saves folder.")
+        Persistent::<SavedWorld>::new(
+            Path::new("saves").join(format!("{}.ferris", name)),
+            SavedWorld::default(),
+            false,
+        )
     };
 
     let SavedWorld {
         seed,
         players,
         chunks,
-    } = &persistent.data;
+    } = &*persistent;
 
     game_info.noises = get_noise_functions(*seed);
     game_info.saved_chunks = Some(Arc::new(RwLock::new(chunks.clone())));
     game_info.current_block = BlockKind::Stone;
-    game_info.player_name = "Player".to_string();
 
     set_cursor_grab(&mut window, true);
 
@@ -116,7 +120,7 @@ fn setup(
     ));
 
     let &(player_pos, player_velocity, player_yaw, player_pitch) = players
-        .get(&game_info.player_name)
+        .get(&"Player".to_string())
         .unwrap_or(&(Vec3::INFINITY, Vec3::ZERO, 0.0, 0.0));
 
     let player = commands
