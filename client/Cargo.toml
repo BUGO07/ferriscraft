@@ -4,7 +4,7 @@ version = "0.1.3"
 edition = "2024"
 
 [dependencies]
-bevy = { version = "0.16.1", features = ["dynamic_linking", "file_watcher", "wayland"] }
+bevy = { version = "0.16.1", features = ["dynamic_linking", "file_watcher"] }
 bevy-inspector-egui = "0.33.1"
 bevy_framepace = "0.19.1"
 bevy_renet = "2.0.0"
