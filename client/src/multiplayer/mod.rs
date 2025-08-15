@@ -54,8 +54,6 @@ fn cleanup(
     if let Some(mut transport) = transport {
         transport.disconnect();
     }
-    game_info.server_addr = None;
-    game_info.player_name = "Player".to_string();
     game_info.chunks = default();
     game_info.saved_chunks = default();
     game_info.loading_chunks = default();
@@ -72,16 +70,13 @@ fn cleanup(
     commands.remove_resource::<NetcodeClientTransport>();
 }
 
-fn setup(mut commands: Commands, multiplayer_input: Res<GameInfo>) {
+fn setup(mut commands: Commands, game_info: Res<GameInfo>) {
     let current_time = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .expect("system clock is wrong");
 
     let mut user_data = [0; NETCODE_USER_DATA_BYTES];
-    // let name = std::env::args()
-    //     .nth(1)
-    //     .unwrap_or(format!("Player {}", rand::random_range(0..1000)));
-    let bytes = multiplayer_input.player_name.as_bytes();
+    let bytes = game_info.settings.player_name.as_bytes();
     user_data[..bytes.len()].copy_from_slice(bytes);
     commands.insert_resource(RenetClient::new(ConnectionConfig::default()));
 
@@ -91,7 +86,7 @@ fn setup(mut commands: Commands, multiplayer_input: Res<GameInfo>) {
         NetcodeClientTransport::new(
             current_time,
             ClientAuthentication::Unsecure {
-                server_addr: multiplayer_input.server_addr.unwrap(),
+                server_addr: game_info.connection_addr.unwrap(),
                 client_id: current_time.as_millis() as u64,
                 user_data: Some(user_data),
                 protocol_id: version[0].parse::<u64>().unwrap() * 1_000_000
@@ -304,7 +299,7 @@ fn receive_server_data(
         };
         if let ServerPacket::PlayerData(data) = packet {
             for (name, pos) in data {
-                if name == game_info.player_name {
+                if name == game_info.settings.player_name {
                     continue;
                 }
                 if let Some((_, mut transform, _)) =

@@ -10,7 +10,7 @@
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
 
@@ -33,6 +33,7 @@ use ferriscraft::{
     BlockKind, CHUNK_HEIGHT, CHUNK_SIZE, GameEntity, GameEntityKind, Persistent, SavedChunk,
     SavedWorld,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::{
     multiplayer::MultiplayerPlugin,
@@ -102,27 +103,10 @@ fn main() {
             ..default()
         })
         .init_resource::<GameInfo>()
-        .insert_resource(GameSettings {
-            render_distance: 16,
-            movement_speed: 4.32,
-            jump_force: 7.7,
-            sensitivity: 1.2,
-            fov: 60,
-            gravity: -23.31,
-            autosave: true,
-            despawn_chunks: true,
-            #[cfg(debug_assertions)]
-            debug_menus: true,
-            #[cfg(not(debug_assertions))]
-            debug_menus: false,
-            hitboxes: false,
-            chunk_borders: false,
-            paused: false,
-        })
         .configure_sets(
             Update,
             PausableSystems.run_if(
-                |settings: Res<GameSettings>, game_state: Res<State<GameState>>| {
+                |settings: Res<GameInfo>, game_state: Res<State<GameState>>| {
                     !settings.paused || game_state.get() == &GameState::MultiPlayer
                 },
             ),
@@ -130,7 +114,7 @@ fn main() {
         .configure_sets(
             FixedUpdate,
             PausableSystems.run_if(
-                |settings: Res<GameSettings>, game_state: Res<State<GameState>>| {
+                |settings: Res<GameInfo>, game_state: Res<State<GameState>>| {
                     !settings.paused || game_state.get() == &GameState::MultiPlayer
                 },
             ),
@@ -139,7 +123,7 @@ fn main() {
         // escape button
         .add_systems(
             Update,
-            (|mut game_settings: ResMut<GameSettings>,
+            (|mut game_info: ResMut<GameInfo>,
               mut window: Single<&mut Window, With<PrimaryWindow>>,
               game_state: Res<State<GameState>>,
               menu_state: Res<State<MenuState>>,
@@ -147,7 +131,7 @@ fn main() {
                 if game_state.get() == &GameState::Menu {
                     match menu_state.get() {
                         MenuState::Main => {
-                            // game_settings.paused = !game_settings.paused;
+                            // game_info.paused = !game_info.paused;
                             // toggle_grab_cursor(&mut window);
                         }
                         _ => {
@@ -155,8 +139,8 @@ fn main() {
                         }
                     }
                 } else {
-                    game_settings.paused = !game_settings.paused;
-                    set_cursor_grab(&mut window, !game_settings.paused);
+                    game_info.paused = !game_info.paused;
+                    set_cursor_grab(&mut window, !game_info.paused);
                 }
             })
             .run_if(input_just_pressed(KeyCode::Escape)),
@@ -164,7 +148,7 @@ fn main() {
         .add_systems(
             Update,
             (
-                handle_keybinds.run_if(|settings: Res<GameSettings>| !settings.paused),
+                handle_keybinds.run_if(|settings: Res<GameInfo>| !settings.paused),
                 handle_gizmos.in_set(PausableSystems),
             )
                 .run_if(not(in_state(GameState::Menu))),
@@ -189,7 +173,7 @@ fn setup(
     game_info.models = models;
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 struct GameInfo {
     chunks: Arc<RwLock<HashMap<IVec3, Chunk>>>,
     loading_chunks: Arc<RwLock<HashSet<IVec3>>>,
@@ -198,13 +182,34 @@ struct GameInfo {
     models: Vec<Handle<Scene>>,
     noises: NoiseFunctions,
     current_block: BlockKind,
-    player_name: String,
-    server_addr: Option<SocketAddr>,
+    settings: Persistent<GameSettings>,
     ui_err: Option<String>,
+    connection_addr: Option<SocketAddr>,
+    paused: bool,
 }
 
-#[derive(Reflect, Resource, Default)]
+impl Default for GameInfo {
+    fn default() -> Self {
+        Self {
+            chunks: Default::default(),
+            loading_chunks: Default::default(),
+            saved_chunks: Default::default(),
+            materials: Default::default(),
+            models: Default::default(),
+            noises: Default::default(),
+            current_block: Default::default(),
+            settings: Persistent::new(PathBuf::from("options.toml"), GameSettings::default(), true),
+            ui_err: Default::default(),
+            connection_addr: Default::default(),
+            paused: Default::default(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Reflect)]
 struct GameSettings {
+    player_name: String,
+    server_addr: String,
     render_distance: i32,
     movement_speed: f32,
     jump_force: f32,
@@ -216,14 +221,35 @@ struct GameSettings {
     debug_menus: bool,
     hitboxes: bool,
     chunk_borders: bool,
-    paused: bool,
+}
+
+impl Default for GameSettings {
+    fn default() -> Self {
+        Self {
+            player_name: Default::default(),
+            server_addr: Default::default(),
+            render_distance: 16,
+            movement_speed: 4.32,
+            jump_force: 7.7,
+            sensitivity: 1.2,
+            fov: 60,
+            gravity: -23.31,
+            autosave: true,
+            despawn_chunks: true,
+            #[cfg(debug_assertions)]
+            debug_menus: true,
+            #[cfg(not(debug_assertions))]
+            debug_menus: false,
+            hitboxes: false,
+            chunk_borders: false,
+        }
+    }
 }
 
 fn handle_keybinds(
     mut commands: Commands,
     mut primary_window: Single<&mut Window, With<PrimaryWindow>>,
     mut wireframe_config: ResMut<WireframeConfig>,
-    mut game_settings: ResMut<GameSettings>,
     mut game_info: ResMut<GameInfo>,
     mut camera: Single<(&Transform, &mut PostProcessSettings, &mut Projection), With<Camera3d>>,
     persistent_world: Option<ResMut<Persistent<SavedWorld>>>,
@@ -232,7 +258,7 @@ fn handle_keybinds(
 ) {
     // borrowchecker...
     if keyboard.just_pressed(KeyCode::F1) {
-        save_game(persistent_world, player, Some(camera.0), Some(&game_info));
+        save_game(persistent_world, player, Some(camera.0), &game_info);
     }
     for button in keyboard.get_just_pressed() {
         match button {
@@ -245,13 +271,13 @@ fn handle_keybinds(
                     ))));
             }
             KeyCode::F3 => {
-                game_settings.debug_menus = !game_settings.debug_menus;
+                game_info.settings.debug_menus = !game_info.settings.debug_menus;
             }
             KeyCode::F4 => {
-                game_settings.hitboxes = !game_settings.hitboxes;
+                game_info.settings.hitboxes = !game_info.settings.hitboxes;
             }
             KeyCode::F6 => {
-                game_settings.chunk_borders = !game_settings.chunk_borders;
+                game_info.settings.chunk_borders = !game_info.settings.chunk_borders;
             }
             KeyCode::F7 => {
                 camera.1.sss += 1;
@@ -285,7 +311,7 @@ fn handle_keybinds(
     let fov = if keyboard.pressed(KeyCode::KeyC) {
         10.0
     } else {
-        game_settings.fov as f32
+        game_info.settings.fov as f32
     };
 
     *camera.2 = Projection::Perspective(PerspectiveProjection {
@@ -297,10 +323,10 @@ fn handle_keybinds(
 fn handle_gizmos(
     mut gizmos: Gizmos,
     player: Single<&Transform, With<Player>>,
-    game_settings: Res<GameSettings>,
+    game_info: Res<GameInfo>,
     game_entities: Query<(Entity, &GameEntity)>,
 ) {
-    if game_settings.hitboxes {
+    if game_info.settings.hitboxes {
         for (_, entity) in game_entities {
             let mut scale = vec3(1.0, 1.0, 1.0);
             if entity.kind == GameEntityKind::Ferris {
@@ -315,7 +341,7 @@ fn handle_gizmos(
         }
     }
 
-    if game_settings.chunk_borders {
+    if game_info.settings.chunk_borders {
         let player = player.translation.floor();
         let chunk_size = CHUNK_SIZE as f32;
         let mut chunk_size_vec = vec2(chunk_size, chunk_size);

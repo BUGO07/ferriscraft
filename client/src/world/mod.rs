@@ -2,7 +2,7 @@ use bevy::{pbr::wireframe::WireframePlugin, prelude::*, tasks::Task};
 use ferriscraft::{Block, GameEntity};
 
 use crate::{
-    GameSettings,
+    GameInfo,
     ui::GameState,
     world::{
         mesher::ChunkMesh,
@@ -29,7 +29,7 @@ impl Plugin for WorldPlugin {
                     handle_chunk_gen,
                     handle_mesh_gen,
                     handle_chunk_despawn
-                        .run_if(|game_settings: Res<GameSettings>| game_settings.despawn_chunks),
+                        .run_if(|game_info: Res<GameInfo>| game_info.settings.despawn_chunks),
                     process_tasks,
                 )
                     .run_if(not(in_state(GameState::Menu))),

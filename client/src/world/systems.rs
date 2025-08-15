@@ -13,7 +13,7 @@ use ferriscraft::{ClientPacket, GameEntity, GameEntityKind, Persistent, SEA_LEVE
 use rayon::slice::ParallelSliceMut;
 
 use crate::{
-    CHUNK_HEIGHT, CHUNK_SIZE, GameInfo, GameSettings,
+    CHUNK_HEIGHT, CHUNK_SIZE, GameInfo,
     player::Player,
     utils::{TREE_OBJECT, noise, vec3_to_index},
     world::{
@@ -31,18 +31,12 @@ pub fn autosave_and_exit(
     window: Query<&Window, With<PrimaryWindow>>,
     player: Query<(&Transform, &Player)>,
     camera: Query<&Transform, With<Camera3d>>,
-    game_settings: Res<GameSettings>,
-    game_info: Option<Res<GameInfo>>,
+    game_info: Res<GameInfo>,
     time: Res<Time>,
 ) {
     if window.is_empty() {
         info!("saving and exiting");
-        save_game(
-            persistent_world,
-            player,
-            camera.single().ok(),
-            game_info.as_deref(),
-        );
+        save_game(persistent_world, player, camera.single().ok(), &game_info);
         if let Some(mut client) = client {
             client.disconnect();
         }
@@ -53,13 +47,8 @@ pub fn autosave_and_exit(
     let elapsed = time.elapsed_secs_wrapped();
 
     // 10 minute autosave
-    if game_settings.autosave && elapsed > *last_save + 600.0 {
-        save_game(
-            persistent_world,
-            player,
-            camera.single().ok(),
-            game_info.as_deref(),
-        );
+    if game_info.settings.autosave && elapsed > *last_save + 600.0 {
+        save_game(persistent_world, player, camera.single().ok(), &game_info);
         *last_save = elapsed;
     }
 
@@ -72,11 +61,9 @@ pub fn save_game(
     persistent_world: Option<ResMut<Persistent<SavedWorld>>>,
     player: Query<(&Transform, &Player)>,
     camera: Option<&Transform>,
-    game_info: Option<&GameInfo>,
+    game_info: &GameInfo,
 ) {
-    if let Some(mut persistent_world) = persistent_world
-        && let Some(game_info) = game_info
-    {
+    if let Some(mut persistent_world) = persistent_world {
         persistent_world
             .update(|saved_world| {
                 if let Ok(player) = player.single()
@@ -85,7 +72,7 @@ pub fn save_game(
                     let (_, pitch, _) = camera.rotation.to_euler(EulerRot::YXZ);
                     let (yaw, _, _) = player.0.rotation.to_euler(EulerRot::YXZ);
                     saved_world.players.insert(
-                        game_info.player_name.clone(),
+                        game_info.settings.player_name.clone(),
                         (player.0.translation, player.1.velocity, yaw, pitch),
                     );
                 }
@@ -100,13 +87,12 @@ pub fn save_game(
 pub fn handle_chunk_gen(
     mut commands: Commands,
     game_info: Res<GameInfo>,
-    game_settings: Res<GameSettings>,
     player: Single<&Transform, With<Player>>,
     client: Option<ResMut<RenetClient>>,
 ) {
     let pt = player.translation;
     let thread_pool = AsyncComputeTaskPool::get();
-    let render_distance = game_settings.render_distance;
+    let render_distance = game_info.settings.render_distance;
     let noises = game_info.noises;
 
     let mut chunks_to_load = Vec::new();
@@ -263,7 +249,6 @@ pub fn handle_mesh_gen(
 pub fn handle_chunk_despawn(
     mut commands: Commands,
     game_info: Res<GameInfo>,
-    game_settings: Res<GameSettings>,
     query: Query<
         (Entity, &Transform),
         Or<(
@@ -275,7 +260,7 @@ pub fn handle_chunk_despawn(
     player: Single<&Transform, With<Player>>,
 ) {
     let pt = player.translation;
-    let render_distance = game_settings.render_distance;
+    let render_distance = game_info.settings.render_distance;
 
     let mut chunks = game_info.chunks.write().unwrap();
     let mut loading_chunks = game_info.loading_chunks.write().unwrap();

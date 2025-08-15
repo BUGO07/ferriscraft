@@ -92,22 +92,40 @@ impl ServerPacket {
 pub struct Persistent<R: Serialize + DeserializeOwned> {
     pub path: PathBuf,
     pub data: R,
+    human: bool,
 }
 
 impl<R: Serialize + DeserializeOwned> Persistent<R> {
-    pub fn new(path: PathBuf, default: R) -> Result<Self, String> {
+    pub fn new(path: PathBuf, default: R, human: bool) -> Self {
         let mut persistent = Self {
             path: path.clone(),
             data: default,
+            human,
         };
+
         if !path.exists() {
-            persistent.initialize()?;
-            persistent.write()?;
-            return Ok(persistent);
+            let init = persistent.initialize();
+            let write = persistent.write();
+            if init.is_ok() && write.is_ok() {
+                return persistent;
+            } else {
+                println!(
+                    "Failed to initialize: {}, data won't be saved. error: {}",
+                    path.display(),
+                    if init.is_err() {
+                        init.unwrap_err()
+                    } else {
+                        write.unwrap_err()
+                    }
+                );
+            }
         }
 
-        persistent.read()?;
-        Ok(persistent)
+        if let Ok(data) = persistent.read() {
+            persistent.data = data;
+        }
+
+        persistent
     }
 
     pub fn update(&mut self, updater: impl FnOnce(&mut R)) -> Result<(), String> {
@@ -122,14 +140,38 @@ impl<R: Serialize + DeserializeOwned> Persistent<R> {
         Ok(())
     }
 
-    fn read(&mut self) -> Result<(), String> {
+    fn read(&self) -> Result<R, String> {
         let bytes = std::fs::read(&self.path).map_err(|e| e.to_string())?;
-        self.data = bincode::deserialize(&bytes).map_err(|e| e.to_string())?;
-        Ok(())
+        if self.human {
+            let s = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+            toml::from_str(&s).map_err(|_| {
+                let msg = format!(
+                    "Couldn't deserialize TOML, reverting '{}' to default.",
+                    self.path.display()
+                );
+                println!("{msg}");
+                msg
+            })
+        } else {
+            bincode::deserialize(&bytes).map_err(|_| {
+                let msg = format!(
+                    "Couldn't deserialize bincode, reverting '{}' to default.",
+                    self.path.display()
+                );
+                println!("{msg}");
+                msg
+            })
+        }
     }
 
-    fn write(&self) -> Result<(), String> {
-        let bytes = bincode::serialize(&self.data).map_err(|e| e.to_string())?;
+    pub fn write(&self) -> Result<(), String> {
+        let bytes = if self.human {
+            ("# don't modify if you don't know what you're doing.\n\n".to_string()
+                + &toml::to_string(&self.data).map_err(|e| e.to_string())?)
+                .into_bytes()
+        } else {
+            bincode::serialize(&self.data).map_err(|e| e.to_string())?
+        };
         std::fs::write(&self.path, bytes).map_err(|e| e.to_string())
     }
 }
