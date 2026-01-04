@@ -378,7 +378,7 @@ impl Direction {
 
         let face_idx = if self == block.direction {
             0.0
-        } else if self as u8 == block.direction.get_opposite() as u8 {
+        } else if self == block.direction.get_opposite() {
             2.0
         } else {
             1.0
