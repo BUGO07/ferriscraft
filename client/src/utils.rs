@@ -170,6 +170,9 @@ pub fn ray_cast(
     let mut current_distance = 0.0;
     let mut normal;
 
+    // Acquire lock once outside the loop to reduce lock contention
+    let chunks_guard = game_info.chunks.read().unwrap();
+
     while current_distance <= max_distance {
         if t_max_x < t_max_y && t_max_x < t_max_z {
             current_block_pos.x += step_x;
@@ -217,7 +220,7 @@ pub fn ray_cast(
         )
         .as_ivec3();
 
-        if let Some(chunk) = game_info.chunks.read().unwrap().get(&chunk_pos) {
+        if let Some(chunk) = chunks_guard.get(&chunk_pos) {
             let block_index = vec3_to_index(local_block_pos);
 
             if block_index < chunk.blocks.len() && (0..CHUNK_HEIGHT).contains(&local_block_pos.y) {

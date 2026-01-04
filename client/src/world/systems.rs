@@ -141,24 +141,27 @@ pub fn handle_chunk_gen(
                         );
                         let (max_y, biome) = terrain_noise(pos, &noises);
 
+                        // Pre-calculate base index for this column to avoid repeated index calculations
+                        let base_index = vec3_to_index(ivec3(rela_x, 0, rela_z));
                         for y in 0..CHUNK_HEIGHT {
-                            chunk.blocks[vec3_to_index(ivec3(rela_x, y, rela_z))] =
+                            let block_index = base_index + (y * CHUNK_SIZE) as usize;
+                            chunk.blocks[block_index] =
                                 generate_block_at(ivec3(pos.x as i32, y, pos.y as i32), max_y);
+                        }
 
-                            if y == max_y
-                                && max_y > SEA_LEVEL
-                                && biome < 0.4
-                                && noise(noises.ferris, pos) > 0.85
-                            {
-                                chunk.entities.push((
-                                    Entity::PLACEHOLDER,
-                                    GameEntity {
-                                        kind: GameEntityKind::Ferris,
-                                        pos: vec3(pos.x, y as f32, pos.y),
-                                        rot: rand::random_range(0..360) as f32,
-                                    },
-                                ));
-                            }
+                        // Check for ferris spawning only at the surface
+                        if max_y > SEA_LEVEL
+                            && biome < 0.4
+                            && noise(noises.ferris, pos) > 0.85
+                        {
+                            chunk.entities.push((
+                                Entity::PLACEHOLDER,
+                                GameEntity {
+                                    kind: GameEntityKind::Ferris,
+                                    pos: vec3(pos.x, max_y as f32, pos.y),
+                                    rot: rand::random_range(0..360) as f32,
+                                },
+                            ));
                         }
 
                         let tree_probabilty = noise(noises.tree, pos);
