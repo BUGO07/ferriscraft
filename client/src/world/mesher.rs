@@ -82,26 +82,29 @@ impl ChunkMesh {
             })
             .collect();
 
+        // Pre-calculate total vertex count for capacity reservation
+        let total_vertices: usize = mesh_parts.iter().map(|p| p.vertices.len()).sum();
+        
+        if total_vertices == 0 {
+            return None;
+        }
+
+        self.vertices.reserve(total_vertices);
+        self.indices.reserve(total_vertices / 4 * 6);
+
         for part in mesh_parts {
-            for v in part.vertices {
-                self.vertices.push(v);
-            }
-            for i in part.indices {
-                self.indices.push(i + self.vertices.len() as u32);
+            let base_idx = self.vertices.len() as u32;
+            self.vertices.extend(part.vertices);
+            
+            // Generate indices for this part's quads
+            let quad_count = (self.vertices.len() - base_idx as usize) / 4;
+            for i in 0..quad_count {
+                let idx = base_idx + i as u32 * 4;
+                self.indices.extend([idx, idx + 1, idx + 2, idx, idx + 2, idx + 3]);
             }
         }
 
-        if self.vertices.is_empty() {
-            None
-        } else {
-            self.vertices.shrink_to_fit();
-            self.indices
-                .extend((0..self.vertices.len() / 4).flat_map(|i| {
-                    let idx = i as u32 * 4;
-                    [idx, idx + 1, idx + 2, idx, idx + 2, idx + 3]
-                }));
-            Some(self)
-        }
+        Some(self)
     }
 
     #[inline(always)]

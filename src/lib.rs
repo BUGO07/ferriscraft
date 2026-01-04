@@ -307,6 +307,20 @@ impl Block {
 }
 
 impl BlockKind {
+    const LOOKUP_TABLE: [BlockKind; 11] = [
+        BlockKind::Air,
+        BlockKind::Stone,
+        BlockKind::Dirt,
+        BlockKind::Grass,
+        BlockKind::Plank,
+        BlockKind::Bedrock,
+        BlockKind::Water,
+        BlockKind::Sand,
+        BlockKind::Wood,
+        BlockKind::Leaf,
+        BlockKind::Snow,
+    ];
+
     #[inline]
     pub fn is_solid(self) -> bool {
         self != BlockKind::Air && self != BlockKind::Water
@@ -317,27 +331,14 @@ impl BlockKind {
     }
     #[inline]
     pub fn can_rotate(self) -> bool {
-        match self {
-            BlockKind::Wood => true,
-            _ => false,
-        }
+        matches!(self, BlockKind::Wood)
     }
     #[inline]
     pub fn from_u32(value: u32) -> BlockKind {
-        match value {
-            0 => BlockKind::Air,
-            1 => BlockKind::Stone,
-            2 => BlockKind::Dirt,
-            3 => BlockKind::Grass,
-            4 => BlockKind::Plank,
-            5 => BlockKind::Bedrock,
-            6 => BlockKind::Water,
-            7 => BlockKind::Sand,
-            8 => BlockKind::Wood,
-            9 => BlockKind::Leaf,
-            10 => BlockKind::Snow,
-            _ => BlockKind::Air,
-        }
+        Self::LOOKUP_TABLE
+            .get(value as usize)
+            .copied()
+            .unwrap_or(BlockKind::Air)
     }
 }
 
@@ -372,49 +373,50 @@ impl Direction {
     pub fn get_uvs(self, block: Block) -> [Vec2; 4] {
         const ATLAS_SIZE_X: f32 = 3.0;
         const ATLAS_SIZE_Y: f32 = 10.0;
+        const INV_ATLAS_X: f32 = 1.0 / ATLAS_SIZE_X;
+        const INV_ATLAS_Y: f32 = 1.0 / ATLAS_SIZE_Y;
 
-        let face_idx = match self {
-            d if d == block.direction => 0.0,
-            d if d == block.direction.get_opposite() => 2.0,
-            _ => 1.0,
+        let face_idx = if self == block.direction {
+            0.0
+        } else if self as u8 == block.direction.get_opposite() as u8 {
+            2.0
+        } else {
+            1.0
         };
 
-        let pos = vec2(
-            face_idx / ATLAS_SIZE_X,
-            (block.kind as u32 - 1) as f32 / ATLAS_SIZE_Y,
-        );
+        let x = face_idx * INV_ATLAS_X;
+        let y = (block.kind as u32 - 1) as f32 * INV_ATLAS_Y;
+        let y1 = y + INV_ATLAS_Y;
+        let x1 = x + INV_ATLAS_X;
 
         let base = [
-            vec2(pos.x, pos.y + 1.0 / ATLAS_SIZE_Y),
-            vec2(pos.x, pos.y),
-            vec2(pos.x + 1.0 / ATLAS_SIZE_X, pos.y),
-            vec2(pos.x + 1.0 / ATLAS_SIZE_X, pos.y + 1.0 / ATLAS_SIZE_Y),
+            vec2(x, y1),
+            vec2(x, y),
+            vec2(x1, y),
+            vec2(x1, y1),
         ];
-        let rotate_90 = [base[3], base[0], base[1], base[2]];
-        let rotate_180 = [base[2], base[3], base[0], base[1]];
-        let rotate_270 = [base[1], base[2], base[3], base[0]];
 
-        // HOLY BAD CODE
+        // Optimize rotation lookup
         use Direction::*;
         match (block.direction, self) {
             (Right, Top | Bottom) => base,
-            (Right, Back) => rotate_90,
-            (Right, _) => rotate_270,
+            (Right, Back) => [base[3], base[0], base[1], base[2]],
+            (Right, _) => [base[1], base[2], base[3], base[0]],
             (Top, Front | Back) => base,
-            (Top, Left) => rotate_90,
-            (Top, _) => rotate_270,
+            (Top, Left) => [base[3], base[0], base[1], base[2]],
+            (Top, _) => [base[1], base[2], base[3], base[0]],
             (Front, Right | Left) => base,
-            (Front, Bottom) => rotate_90,
-            (Front, _) => rotate_270,
-            (Left, Top | Bottom) => rotate_180,
-            (Left, Back) => rotate_270,
-            (Left, _) => rotate_90,
-            (Bottom, Front | Back) => rotate_180,
-            (Bottom, Left) => rotate_270,
-            (Bottom, _) => rotate_90,
-            (Back, Right | Left) => rotate_180,
-            (Back, Bottom) => rotate_270,
-            (Back, _) => rotate_90,
+            (Front, Bottom) => [base[3], base[0], base[1], base[2]],
+            (Front, _) => [base[1], base[2], base[3], base[0]],
+            (Left, Top | Bottom) => [base[2], base[3], base[0], base[1]],
+            (Left, Back) => [base[1], base[2], base[3], base[0]],
+            (Left, _) => [base[3], base[0], base[1], base[2]],
+            (Bottom, Front | Back) => [base[2], base[3], base[0], base[1]],
+            (Bottom, Left) => [base[1], base[2], base[3], base[0]],
+            (Bottom, _) => [base[3], base[0], base[1], base[2]],
+            (Back, Right | Left) => [base[2], base[3], base[0], base[1]],
+            (Back, Bottom) => [base[1], base[2], base[3], base[0]],
+            (Back, _) => [base[3], base[0], base[1], base[2]],
         }
     }
 }

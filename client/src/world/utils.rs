@@ -87,6 +87,7 @@ const MOUNTAIN_MAX_HEIGHT: f32 = SEA_LEVEL as f32 + 180.0;
 const MOUNTAIN_FLATTENING_EXPONENT: f32 = 1.5;
 const OCEAN_PLAINS_THRESHOLD: f32 = 0.4;
 const PLAINS_MOUNTAIN_THRESHOLD: f32 = 0.6;
+const PLAINS_MOUNTAIN_RANGE: f32 = PLAINS_MOUNTAIN_THRESHOLD - OCEAN_PLAINS_THRESHOLD;
 
 #[inline]
 // max_y, biome
@@ -94,26 +95,23 @@ pub fn terrain_noise(pos: Vec2, noises: &NoiseFunctions) -> (i32, f32) {
     let terrain_fbm = noise(noises.terrain, pos);
     let biome_fbm = noise(noises.biome, pos);
 
-    let min_height: f32;
-    let max_height: f32;
-    let flattening_exp: f32;
-
-    if biome_fbm < OCEAN_PLAINS_THRESHOLD {
+    let (min_height, max_height, flattening_exp) = if biome_fbm < OCEAN_PLAINS_THRESHOLD {
         let t = biome_fbm / OCEAN_PLAINS_THRESHOLD;
-        min_height = OCEAN_MIN_HEIGHT.lerp(PLAINS_MIN_HEIGHT, t);
-        max_height = OCEAN_MAX_HEIGHT.lerp(PLAINS_MAX_HEIGHT, t);
-        flattening_exp = OCEAN_FLATTENING_EXPONENT.lerp(PLAINS_FLATTENING_EXPONENT, t);
+        (
+            OCEAN_MIN_HEIGHT.lerp(PLAINS_MIN_HEIGHT, t),
+            OCEAN_MAX_HEIGHT.lerp(PLAINS_MAX_HEIGHT, t),
+            OCEAN_FLATTENING_EXPONENT.lerp(PLAINS_FLATTENING_EXPONENT, t),
+        )
     } else if biome_fbm < PLAINS_MOUNTAIN_THRESHOLD {
-        let t = (biome_fbm - OCEAN_PLAINS_THRESHOLD)
-            / (PLAINS_MOUNTAIN_THRESHOLD - OCEAN_PLAINS_THRESHOLD);
-        min_height = PLAINS_MIN_HEIGHT.lerp(MOUNTAIN_MIN_HEIGHT, t);
-        max_height = PLAINS_MAX_HEIGHT.lerp(MOUNTAIN_MAX_HEIGHT, t);
-        flattening_exp = PLAINS_FLATTENING_EXPONENT.lerp(MOUNTAIN_FLATTENING_EXPONENT, t);
+        let t = (biome_fbm - OCEAN_PLAINS_THRESHOLD) / PLAINS_MOUNTAIN_RANGE;
+        (
+            PLAINS_MIN_HEIGHT.lerp(MOUNTAIN_MIN_HEIGHT, t),
+            PLAINS_MAX_HEIGHT.lerp(MOUNTAIN_MAX_HEIGHT, t),
+            PLAINS_FLATTENING_EXPONENT.lerp(MOUNTAIN_FLATTENING_EXPONENT, t),
+        )
     } else {
-        min_height = MOUNTAIN_MIN_HEIGHT;
-        max_height = MOUNTAIN_MAX_HEIGHT;
-        flattening_exp = MOUNTAIN_FLATTENING_EXPONENT;
-    }
+        (MOUNTAIN_MIN_HEIGHT, MOUNTAIN_MAX_HEIGHT, MOUNTAIN_FLATTENING_EXPONENT)
+    };
 
     let height = min_height + terrain_fbm.powf(flattening_exp) * (max_height - min_height);
 
