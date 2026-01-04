@@ -253,7 +253,7 @@ fn player_movement(
         // }
     }
 
-    let movement_collision_offsets = &[
+    const MOVEMENT_COLLISION_OFFSETS: [Vec3; 10] = [
         vec3(0.25, 0.0, 0.25),
         vec3(-0.25, 0.0, 0.25),
         vec3(0.25, 0.0, -0.25),
@@ -266,13 +266,15 @@ fn player_movement(
         vec3(0.0, 1.0, 0.0),
     ];
 
+    const OFFSET_Y: Vec3 = vec3(0.0, 0.01, 0.0);
+
     if target_velocity.x != 0.0 {
         let move_x = Vec3::new(target_velocity.x * delta, 0.0, 0.0);
         let dir_x = move_x.normalize_or_zero();
         let distance_x = move_x.length() + 0.05;
 
-        for offset in movement_collision_offsets {
-            let origin = transform.translation + *offset + Vec3::Y * 0.01;
+        for offset in &MOVEMENT_COLLISION_OFFSETS {
+            let origin = transform.translation + *offset + OFFSET_Y;
             if let Some(hit) = ray_cast(&game_info, origin, dir_x, distance_x)
                 && hit.normal.as_vec3().dot(dir_x) < -0.1
             {
@@ -287,8 +289,8 @@ fn player_movement(
         let dir_z = move_z.normalize_or_zero();
         let distance_z = move_z.length() + 0.05;
 
-        for offset in movement_collision_offsets {
-            let origin = transform.translation + *offset + Vec3::Y * 0.01;
+        for offset in &MOVEMENT_COLLISION_OFFSETS {
+            let origin = transform.translation + *offset + OFFSET_Y;
             if let Some(hit) = ray_cast(&game_info, origin, dir_z, distance_z)
                 && hit.normal.as_vec3().dot(dir_z) < -0.1
             {
@@ -304,7 +306,7 @@ fn player_movement(
     let mut grounded = false;
     let mut closest_ground_distance = f32::MAX;
 
-    let grounded_offsets = &[
+    const GROUNDED_OFFSETS: [Vec3; 5] = [
         vec3(0.25, 0.1, 0.25),
         vec3(-0.25, 0.1, 0.25),
         vec3(0.25, 0.1, -0.25),
@@ -312,7 +314,7 @@ fn player_movement(
         vec3(0.0, 0.1, 0.0),
     ];
 
-    for offset in grounded_offsets {
+    for offset in &GROUNDED_OFFSETS {
         let origin = transform.translation + *offset;
         let fall_distance = player.velocity.y.abs() * delta + 0.1;
 
@@ -328,8 +330,9 @@ fn player_movement(
     if grounded {
         if !game_info.paused && keyboard.pressed(KeyCode::Space) {
             let mut head_blocked = false;
-            for offset in grounded_offsets {
-                let origin = transform.translation + Vec3::Y * 1.8 + *offset;
+            const HEAD_OFFSET: Vec3 = vec3(0.0, 1.8, 0.0);
+            for offset in &GROUNDED_OFFSETS {
+                let origin = transform.translation + HEAD_OFFSET + *offset;
                 if ray_cast(&game_info, origin, Vec3::Y, 0.3).is_some() {
                     head_blocked = true;
                     break;
